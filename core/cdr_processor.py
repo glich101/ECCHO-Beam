@@ -217,12 +217,14 @@ class CDRProcessor:
                 'LastCellAddr': pick('last_cell_addr').astype(str),
                 'FirstCellCity': pick('first_cell_city').astype(str),
                 'LastCellCity': pick('last_cell_city').astype(str),
+                'FirstLatLong': self._pick(cols, df, ALIASES.get('first_lat_long', [])).astype(str),
+                'LastLatLong': self._pick(cols, df, ALIASES.get('last_lat_long', [])).astype(str),
                 'IMEI': pick('imei').astype(str),
                 'IMSI': pick('imsi').astype(str),
                 'Circle': pick('circle').astype(str),
                 'HomeCircle': pick('home_circle').astype(str),
                 'operator': pick('operator').astype(str),
-                'SMSC': self._pick(cols, df, ALIASES.get('smsc', []))
+                'SMSC': self._pick(cols, df, ALIASES.get('smsc', [])).astype(str)
             })
 
             self.update_progress(40, "Parsing dates and times...")

@@ -26,6 +26,13 @@ class ExcelGenerator:
         """Update progress if callback is available"""
         if self.progress_callback:
             self.progress_callback(percent, message)
+    
+    def clean_text(self, s):
+        """Clean and normalize text"""
+        if s is None or (isinstance(s, float) and np.isnan(s)): 
+            return ""
+        import re
+        return re.sub(r"\s+", " ", str(s)).strip()
 
     def safe_reindex_columns(self, df, columns):
         """Safely reindex dataframe columns"""
@@ -77,15 +84,39 @@ class ExcelGenerator:
             logging.warning(f"Error formatting sheet {sheet_name}: {e}")
 
     def create_mapping_sheet(self, df):
-        """Create Mapping sheet - basic call/SMS records"""
+        """Create Mapping sheet - comprehensive call/SMS records with all original columns"""
         try:
-            cols = ['DateStr','TimeStr','Counterparty','CallTypeStd','Duration','FirstCellCity','LastCellCity','IMEI']
-            mapping_df = self.safe_reindex_columns(df, cols)
+            n = len(df)
+            empty_series = lambda val="": pd.Series([val]*n)
             
-            # Clean and format data
-            for col in mapping_df.columns:
-                if col in mapping_df.columns:
-                    mapping_df[col] = mapping_df[col].astype(str).str.strip()
+            # Build comprehensive mapping with all original columns
+            mapping_df = pd.DataFrame({
+                'CdrNo': df['CdrNo'].fillna('').astype(str),
+                'B Party': df['Counterparty'].apply(self.clean_text),
+                'Date': df['DateStr'].fillna('').astype(str),
+                'Time': df['TimeStr'].fillna('').astype(str),
+                'Duration': df['Duration'].fillna(0).astype('Int64'),
+                'Call Type': df['CallTypeStd'].fillna('').astype(str),
+                'First Cell ID': df['FirstCellID'].apply(self.clean_text),
+                'First Cell ID Address': df['FirstCellAddr'].apply(self.clean_text),
+                'Last Cell ID': df['LastCellID'].apply(self.clean_text),
+                'Last Cell ID Address': df['LastCellAddr'].apply(self.clean_text),
+                'IMEI': df['IMEI'].apply(self.clean_text),
+                'IMEI Manufacturer': empty_series(""),
+                'Device Type': empty_series(""),
+                'IMSI': df['IMSI'].apply(self.clean_text),
+                'Roaming': df['Circle'].fillna("").astype(str),
+                'B Party Provider': empty_series(""),
+                'Main City(First CellID)': df['FirstCellCity'].apply(self.clean_text),
+                'Sub City(First CellID)': empty_series(""),
+                'Lat-Long-Azimuth (First CellID)': empty_series(""),
+                'Crime': empty_series(""),
+                'Circle': df['Circle'].fillna("").astype(str),
+                'Operator': df['operator'].fillna("").astype(str),
+                'CallForward': df.get('CallForward', empty_series()).apply(self.clean_text),
+                'LRN': df.get('LRN', empty_series()).apply(self.clean_text),
+                'Location': empty_series("")
+            })
             
             return mapping_df
             
@@ -94,57 +125,120 @@ class ExcelGenerator:
             return pd.DataFrame()
 
     def create_summary_sheet(self, df):
-        """Create Summary sheet - aggregated statistics"""
+        """Create Summary sheet - comprehensive per-contact summary"""
         try:
-            summary_data = []
+            # Filter out records with blank counterparty
+            df_clean = df[df['Counterparty'].astype(str).str.strip() != ""].copy()
             
-            # Basic statistics
-            total_records = len(df)
-            calls_df = df[df['CallTypeStd'].str.startswith('CALL')]
-            sms_df = df[df['CallTypeStd'].str.startswith('SMS')]
+            if len(df_clean) == 0:
+                return pd.DataFrame()
             
-            summary_data.append(['Total Records', total_records])
-            summary_data.append(['Total Calls', len(calls_df)])
-            summary_data.append(['Total SMS', len(sms_df)])
-            summary_data.append(['Incoming Calls', len(df[df['CallTypeStd'] == 'CALL_IN'])])
-            summary_data.append(['Outgoing Calls', len(df[df['CallTypeStd'] == 'CALL_OUT'])])
-            summary_data.append(['Incoming SMS', len(df[df['CallTypeStd'] == 'SMS_IN'])])
-            summary_data.append(['Outgoing SMS', len(df[df['CallTypeStd'] == 'SMS_OUT'])])
+            # Group by CdrNo and Counterparty
+            grp = df_clean.groupby(['CdrNo', 'Counterparty'], dropna=False)
             
-            # Duration statistics
-            if len(calls_df) > 0:
-                total_duration = calls_df['Duration'].sum()
-                avg_duration = calls_df['Duration'].mean()
-                summary_data.append(['Total Call Duration (seconds)', total_duration])
-                summary_data.append(['Average Call Duration (seconds)', f"{avg_duration:.2f}"])
+            # Aggregate statistics
+            agg = grp.agg(
+                Total_Calls=('Counterparty', 'count'),
+                Total_Duration=('Duration', 'sum'),
+                First_dt=('start_dt', 'min'),
+                Last_dt=('start_dt', 'max'),
+                Total_Days=('DateStr', lambda s: s.nunique()),
+                Total_CellIds=('FirstCellID', lambda s: s.nunique()),
+                Total_IMEI=('IMEI', lambda s: s.nunique()),
+                Total_IMSI=('IMSI', lambda s: s.nunique()),
+                OutCalls=('CallTypeStd', lambda s: (s == 'CALL_OUT').sum()),
+                InCalls=('CallTypeStd', lambda s: (s == 'CALL_IN').sum()),
+                OutSms=('CallTypeStd', lambda s: (s == 'SMS_OUT').sum()),
+                InSms=('CallTypeStd', lambda s: (s == 'SMS_IN').sum()),
+                RoamCalls=('Circle', lambda s: s.replace("", np.nan).notna().sum())
+            ).reset_index()
             
-            # Date range
-            if 'start_dt' in df.columns and not df['start_dt'].isna().all():
-                min_date = df['start_dt'].min()
-                max_date = df['start_dt'].max()
-                summary_data.append(['Date Range Start', min_date.strftime('%Y-%m-%d %H:%M:%S') if pd.notna(min_date) else 'N/A'])
-                summary_data.append(['Date Range End', max_date.strftime('%Y-%m-%d %H:%M:%S') if pd.notna(max_date) else 'N/A'])
+            # Get provider information (most frequent operator per counterparty)
+            operator_map = {}
+            for cp, sub in df_clean.groupby('Counterparty'):
+                try:
+                    operator_map[cp] = sub['operator'].astype(str).mode().iat[0]
+                except Exception:
+                    operator_map[cp] = ""
             
-            # Unique counts
-            summary_data.append(['Unique Counterparties', df['Counterparty'].nunique()])
-            summary_data.append(['Unique IMEIs', df['IMEI'].nunique()])
-            summary_data.append(['Unique Cell Sites', df['FirstCellCity'].nunique()])
+            # Format dates and times
+            def fmt_date_dMonY(d):
+                if pd.isna(d) or d is None:
+                    return ""
+                try:
+                    return pd.to_datetime(d).strftime("%d/%b/%Y")
+                except Exception:
+                    return ""
             
-            return pd.DataFrame(summary_data, columns=['Metric', 'Value'])
+            def fmt_time_HMS(t):
+                if pd.isna(t) or t is None:
+                    return ""
+                try:
+                    import datetime as _dt
+                    if isinstance(t, _dt.time):
+                        return t.strftime("%H:%M:%S")
+                    if isinstance(t, _dt.date) and not isinstance(t, _dt.datetime):
+                        return ""
+                    return pd.to_datetime(t).strftime("%H:%M:%S")
+                except Exception:
+                    return ""
+            
+            # Build comprehensive summary
+            summary_df = pd.DataFrame({
+                'CdrNo': agg['CdrNo'],
+                'B Party': agg['Counterparty'].apply(self.clean_text),
+                'Provider': agg['Counterparty'].map(operator_map).fillna(""),
+                'Type': "",
+                'Total Calls': agg['Total_Calls'],
+                'Out Calls': agg['OutCalls'],
+                'In Calls': agg['InCalls'],
+                'Out Sms': agg['OutSms'],
+                'In Sms': agg['InSms'],
+                'Other Calls': 0,
+                'Roam Calls': agg['RoamCalls'],
+                'Roam Sms': 0,
+                'Total Duration': agg['Total_Duration'],
+                'Total Days': agg['Total_Days'],
+                'Total CellIds': agg['Total_CellIds'],
+                'Total Imei': agg['Total_IMEI'],
+                'Total Imsi': agg['Total_IMSI'],
+                'First Call Date': agg['First_dt'].dt.date.apply(fmt_date_dMonY),
+                'First Call Time': agg['First_dt'].dt.time.apply(fmt_time_HMS),
+                'Last Call Date': agg['Last_dt'].dt.date.apply(fmt_date_dMonY),
+                'Last Call Time': agg['Last_dt'].dt.time.apply(fmt_time_HMS)
+            })
+            
+            return summary_df
             
         except Exception as e:
             logging.error(f"Error creating Summary sheet: {e}")
             return pd.DataFrame()
 
     def create_max_calls_sheet(self, df):
-        """Create MaxCalls sheet - top counterparties by call count"""
+        """Create MaxCalls sheet - top counterparties by call count with provider info"""
         try:
-            calls_df = df[df['CallTypeStd'].str.startswith('CALL')]
-            if len(calls_df) == 0:
+            df_clean = df[df['Counterparty'].astype(str).str.strip() != ""].copy()
+            if len(df_clean) == 0:
                 return pd.DataFrame()
                 
-            max_calls = calls_df.groupby('Counterparty').size().reset_index(name='CallCount')
-            max_calls = max_calls.sort_values('CallCount', ascending=False).head(50)
+            # Group by CdrNo and Counterparty
+            max_calls = df_clean.groupby(['CdrNo', 'Counterparty'], dropna=False).size().reset_index(name='Total Calls')
+            max_calls = max_calls[max_calls['Counterparty'].astype(str).str.strip() != ""]
+            
+            # Get provider information
+            operator_map = {}
+            for cp, sub in df_clean.groupby('Counterparty'):
+                try:
+                    operator_map[cp] = sub['operator'].astype(str).mode().iat[0]
+                except Exception:
+                    operator_map[cp] = ""
+            
+            max_calls['Provider'] = max_calls['Counterparty'].map(operator_map).fillna("")
+            max_calls = max_calls.rename(columns={'Counterparty': 'B Party'})
+            max_calls = max_calls[max_calls['B Party'].astype(str).str.strip() != ""]
+            
+            # Reorder columns
+            max_calls = max_calls[['CdrNo', 'B Party', 'Total Calls', 'Provider']]
             
             return max_calls
             
@@ -153,32 +247,95 @@ class ExcelGenerator:
             return pd.DataFrame()
 
     def create_max_duration_sheet(self, df):
-        """Create MaxDuration sheet - top counterparties by duration"""
+        """Create MaxDuration sheet - top counterparties by duration with provider info"""
         try:
-            calls_df = df[df['CallTypeStd'].str.startswith('CALL')]
-            if len(calls_df) == 0:
+            df_clean = df[df['Counterparty'].astype(str).str.strip() != ""].copy()
+            if len(df_clean) == 0:
                 return pd.DataFrame()
                 
-            max_dur = calls_df.groupby('Counterparty')['Duration'].sum().reset_index()
-            max_dur = max_dur.sort_values('Duration', ascending=False).head(50)
-            max_dur['Duration_Minutes'] = (max_dur['Duration'] / 60).round(2)
+            # Group by CdrNo and Counterparty
+            max_dur = df_clean.groupby(['CdrNo', 'Counterparty'], dropna=False)['Duration'].sum().reset_index(name='Total Duration')
+            max_dur = max_dur[max_dur['Counterparty'].astype(str).str.strip() != ""]
             
-            return max_dur[['Counterparty', 'Duration', 'Duration_Minutes']]
+            # Get provider information
+            operator_map = {}
+            for cp, sub in df_clean.groupby('Counterparty'):
+                try:
+                    operator_map[cp] = sub['operator'].astype(str).mode().iat[0]
+                except Exception:
+                    operator_map[cp] = ""
+            
+            max_dur['Provider'] = max_dur['Counterparty'].map(operator_map).fillna("")
+            max_dur = max_dur.rename(columns={'Counterparty': 'B Party'})
+            max_dur = max_dur[max_dur['B Party'].astype(str).str.strip() != ""]
+            
+            # Reorder columns
+            max_dur = max_dur[['CdrNo', 'B Party', 'Total Duration', 'Provider']]
+            
+            return max_dur
             
         except Exception as e:
             logging.error(f"Error creating MaxDuration sheet: {e}")
             return pd.DataFrame()
 
     def create_max_stay_sheet(self, df):
-        """Create MaxStay sheet - locations with longest stays"""
+        """Create MaxStay sheet - comprehensive location analysis"""
         try:
-            # Group by cell location and calculate time spans
-            location_groups = df.groupby('FirstCellCity')['start_dt'].agg(['min', 'max', 'count']).reset_index()
-            location_groups['Duration_Hours'] = ((location_groups['max'] - location_groups['min']).dt.total_seconds() / 3600).round(2)
-            location_groups = location_groups.sort_values('Duration_Hours', ascending=False).head(50)
-            location_groups.columns = ['Location', 'First_Seen', 'Last_Seen', 'Record_Count', 'Duration_Hours']
+            # Filter for records with cell ID information
+            sub = df[df['FirstCellID'].astype(str).str.strip() != ""].copy()
+            if sub.empty:
+                return pd.DataFrame()
             
-            return location_groups
+            # Group by CdrNo and FirstCellID
+            g = sub.groupby(['CdrNo', 'FirstCellID'], dropna=False).agg(
+                Total_Calls=('FirstCellID', 'count'),
+                Days=('DateStr', lambda s: s.nunique()),
+                TowerAddress=('FirstCellAddr', lambda s: s.replace("", np.nan).dropna().iloc[0] if len(s.replace("", np.nan).dropna()) > 0 else ""),
+                First_dt=('start_dt', 'min'),
+                Last_dt=('start_dt', 'max'),
+                Roaming=('Circle', lambda s: s.replace("", np.nan).dropna().iloc[0] if len(s.replace("", np.nan).dropna()) > 0 else "")
+            ).reset_index()
+            
+            # Format dates and times
+            def fmt_date_dMonY(d):
+                if pd.isna(d) or d is None:
+                    return ""
+                try:
+                    return pd.to_datetime(d).strftime("%d/%b/%Y")
+                except Exception:
+                    return ""
+            
+            def fmt_time_HMS(t):
+                if pd.isna(t) or t is None:
+                    return ""
+                try:
+                    import datetime as _dt
+                    if isinstance(t, _dt.time):
+                        return t.strftime("%H:%M:%S")
+                    if isinstance(t, _dt.date) and not isinstance(t, _dt.datetime):
+                        return ""
+                    return pd.to_datetime(t).strftime("%H:%M:%S")
+                except Exception:
+                    return ""
+            
+            # Build comprehensive MaxStay sheet
+            max_stay_df = pd.DataFrame({
+                'CdrNo': g['CdrNo'],
+                'Cell ID': g['FirstCellID'],
+                'Total Calls': g['Total_Calls'],
+                'Days': g['Days'],
+                'Tower Address': g['TowerAddress'].apply(self.clean_text),
+                'Latitude': "",
+                'Longitude': "",
+                'Azimuth': "",
+                'Roaming': g['Roaming'],
+                'First Call Date': g['First_dt'].dt.date.apply(fmt_date_dMonY),
+                'First Call Time': g['First_dt'].dt.time.apply(fmt_time_HMS),
+                'Last Call Date': g['Last_dt'].dt.date.apply(fmt_date_dMonY),
+                'Last Call Time': g['Last_dt'].dt.time.apply(fmt_time_HMS)
+            })
+            
+            return max_stay_df
             
         except Exception as e:
             logging.error(f"Error creating MaxStay sheet: {e}")
@@ -187,21 +344,80 @@ class ExcelGenerator:
     def create_roaming_analysis_sheets(self, df):
         """Create roaming-related analysis sheets"""
         try:
-            # OtherStateContactSummary - contacts from different circles
-            other_state = df[df['Circle'] != df['HomeCircle']] if 'Circle' in df.columns else pd.DataFrame()
+            # OtherStateContactSummary - comprehensive circle analysis
+            sub = df.copy()
+            sub['Circle'] = sub['Circle'].astype(str)
+            sub = sub[sub['Circle'].str.strip() != ""]
             
-            if len(other_state) > 0:
-                other_state_summary = other_state.groupby(['Circle', 'Counterparty']).size().reset_index(name='ContactCount')
-                other_state_summary = other_state_summary.sort_values('ContactCount', ascending=False).head(100)
-            else:
+            if sub.empty:
                 other_state_summary = pd.DataFrame()
-            
-            # RoamingPeriod - time periods in different circles
-            if 'Circle' in df.columns and not df['start_dt'].isna().all():
-                roaming_periods = df.groupby('Circle')['start_dt'].agg(['min', 'max', 'count']).reset_index()
-                roaming_periods.columns = ['Circle', 'Period_Start', 'Period_End', 'Record_Count']
             else:
+                g = sub.groupby(['CdrNo', 'Circle'], dropna=False).agg(
+                    TotalCalls=('Circle', 'count'),
+                    OutCalls=('CallTypeStd', lambda s: (s == 'CALL_OUT').sum()),
+                    InCalls=('CallTypeStd', lambda s: (s == 'CALL_IN').sum()),
+                    OutSms=('CallTypeStd', lambda s: (s == 'SMS_OUT').sum()),
+                    InSms=('CallTypeStd', lambda s: (s == 'SMS_IN').sum()),
+                    TotalDuration=('Duration', 'sum')
+                ).reset_index()
+                
+                other_state_summary = pd.DataFrame({
+                    'CdrNo': g['CdrNo'],
+                    'Circle': g['Circle'],
+                    'Total Calls': g['TotalCalls'],
+                    'Out Calls': g['OutCalls'],
+                    'In Calls': g['InCalls'],
+                    'Out Sms': g['OutSms'],
+                    'In Sms': g['InSms'],
+                    'Other Calls': 0,
+                    'Total Duration': g['TotalDuration']
+                })
+                other_state_summary = other_state_summary[other_state_summary['Total Calls'] > 0]
+            
+            # RoamingPeriod - detailed roaming periods
+            if sub.empty:
                 roaming_periods = pd.DataFrame()
+            else:
+                g = sub.groupby(['CdrNo', 'Circle'], dropna=False).agg(
+                    TotalCalls=('Circle', 'count'),
+                    Days=('DateStr', lambda s: s.nunique()),
+                    FirstLoc=('FirstCellAddr', lambda s: s.replace("", np.nan).dropna().iloc[0] if len(s.replace("", np.nan).dropna()) > 0 else ""),
+                    LastLoc=('LastCellAddr', lambda s: s.replace("", np.nan).dropna().iloc[-1] if len(s.replace("", np.nan).dropna()) > 0 else ""),
+                    First_dt=('start_dt', 'min'),
+                    Last_dt=('start_dt', 'max'),
+                    OutCalls=('CallTypeStd', lambda s: (s == 'CALL_OUT').sum()),
+                    InCalls=('CallTypeStd', lambda s: (s == 'CALL_IN').sum()),
+                    OutSms=('CallTypeStd', lambda s: (s == 'SMS_OUT').sum()),
+                    InSms=('CallTypeStd', lambda s: (s == 'SMS_IN').sum()),
+                    TotalDuration=('Duration', 'sum')
+                ).reset_index()
+                
+                # Format period
+                def format_period(first_dt, last_dt):
+                    if pd.isna(first_dt) or pd.isna(last_dt):
+                        return ""
+                    try:
+                        start_str = pd.to_datetime(first_dt).strftime("%d/%b/%Y %H:%M:%S")
+                        end_str = pd.to_datetime(last_dt).strftime("%d/%b/%Y %H:%M:%S")
+                        return f"{start_str} to {end_str}"
+                    except Exception:
+                        return ""
+                
+                roaming_periods = pd.DataFrame({
+                    'CdrNo': g['CdrNo'],
+                    'Roaming': g['Circle'],
+                    'Period': [format_period(f, l) for f, l in zip(g['First_dt'], g['Last_dt'])],
+                    'Total Calls': g['TotalCalls'],
+                    'Days': g['Days'],
+                    'First Location': g['FirstLoc'].apply(self.clean_text),
+                    'Last Location': g['LastLoc'].apply(self.clean_text),
+                    'Out Calls': g['OutCalls'],
+                    'In Calls': g['InCalls'],
+                    'Out Sms': g['OutSms'],
+                    'In Sms': g['InSms'],
+                    'Other Calls': 0,
+                    'Total Duration': g['TotalDuration']
+                })
             
             return other_state_summary, roaming_periods
             
@@ -212,42 +428,99 @@ class ExcelGenerator:
     def create_device_analysis_sheets(self, df):
         """Create IMEI and IMSI analysis sheets"""
         try:
-            # IMEIPeriod - unique IMEI usage periods
-            if 'IMEI' in df.columns and not df['IMEI'].str.strip().eq('').all():
-                imei_df = df[df['IMEI'].str.strip() != ''].copy()
-                if len(imei_df) > 0:
-                    # Group by IMEI and CdrNo, keep highest activity
-                    imei_groups = imei_df.groupby(['IMEI', 'CdrNo']).agg({
-                        'start_dt': ['min', 'max'],
-                        'CallTypeStd': 'count'
-                    }).reset_index()
-                    
-                    imei_groups.columns = ['IMEI', 'CdrNo', 'First_Used', 'Last_Used', 'Activity_Count']
-                    
-                    # Keep only highest activity per IMEI per CdrNo
-                    imei_period = imei_groups.groupby(['IMEI', 'CdrNo']).apply(
-                        lambda x: x.loc[x['Activity_Count'].idxmax()]
-                    ).reset_index(drop=True)
-                else:
-                    imei_period = pd.DataFrame()
+            # Format dates and times
+            def fmt_date_dMonY(d):
+                if pd.isna(d) or d is None:
+                    return ""
+                try:
+                    return pd.to_datetime(d).strftime("%d/%b/%Y")
+                except Exception:
+                    return ""
+            
+            def fmt_time_HMS(t):
+                if pd.isna(t) or t is None:
+                    return ""
+                try:
+                    import datetime as _dt
+                    if isinstance(t, _dt.time):
+                        return t.strftime("%H:%M:%S")
+                    if isinstance(t, _dt.date) and not isinstance(t, _dt.datetime):
+                        return ""
+                    return pd.to_datetime(t).strftime("%H:%M:%S")
+                except Exception:
+                    return ""
+            
+            # IMEIPeriod - comprehensive IMEI analysis
+            imei_df = df[df['IMEI'].astype(str).str.strip() != ''].copy()
+            if len(imei_df) > 0:
+                g = imei_df.groupby(['CdrNo', 'IMEI'], dropna=False).agg(
+                    Total_Calls=('IMEI', 'count'),
+                    Days=('DateStr', lambda s: s.nunique()),
+                    First_dt=('start_dt', 'min'),
+                    Last_dt=('start_dt', 'max'),
+                    Total_Duration=('Duration', 'sum'),
+                    OutCalls=('CallTypeStd', lambda s: (s == 'CALL_OUT').sum()),
+                    InCalls=('CallTypeStd', lambda s: (s == 'CALL_IN').sum()),
+                    OutSms=('CallTypeStd', lambda s: (s == 'SMS_OUT').sum()),
+                    InSms=('CallTypeStd', lambda s: (s == 'SMS_IN').sum())
+                ).reset_index()
+                
+                # Deduplicate by keeping highest activity per IMEI
+                imei_period = g.loc[g.groupby(['CdrNo', 'IMEI'])['Total_Calls'].idxmax()].reset_index(drop=True)
+                
+                imei_period = pd.DataFrame({
+                    'CdrNo': imei_period['CdrNo'],
+                    'IMEI': imei_period['IMEI'],
+                    'Total Calls': imei_period['Total_Calls'],
+                    'Days': imei_period['Days'],
+                    'Out Calls': imei_period['OutCalls'],
+                    'In Calls': imei_period['InCalls'],
+                    'Out Sms': imei_period['OutSms'],
+                    'In Sms': imei_period['InSms'],
+                    'Other Calls': 0,
+                    'Total Duration': imei_period['Total_Duration'],
+                    'First Call Date': imei_period['First_dt'].dt.date.apply(fmt_date_dMonY),
+                    'First Call Time': imei_period['First_dt'].dt.time.apply(fmt_time_HMS),
+                    'Last Call Date': imei_period['Last_dt'].dt.date.apply(fmt_date_dMonY),
+                    'Last Call Time': imei_period['Last_dt'].dt.time.apply(fmt_time_HMS)
+                })
             else:
                 imei_period = pd.DataFrame()
             
-            # IMSIPeriod - similar for IMSI
-            if 'IMSI' in df.columns and not df['IMSI'].str.strip().eq('').all():
-                imsi_df = df[df['IMSI'].str.strip() != ''].copy()
-                if len(imsi_df) > 0:
-                    imsi_groups = imsi_df.groupby(['IMSI', 'CdrNo']).agg({
-                        'start_dt': ['min', 'max'],
-                        'CallTypeStd': 'count'
-                    }).reset_index()
-                    
-                    imsi_groups.columns = ['IMSI', 'CdrNo', 'First_Used', 'Last_Used', 'Activity_Count']
-                    imsi_period = imsi_groups.groupby(['IMSI', 'CdrNo']).apply(
-                        lambda x: x.loc[x['Activity_Count'].idxmax()]
-                    ).reset_index(drop=True)
-                else:
-                    imsi_period = pd.DataFrame()
+            # IMSIPeriod - comprehensive IMSI analysis
+            imsi_df = df[df['IMSI'].astype(str).str.strip() != ''].copy()
+            if len(imsi_df) > 0:
+                g = imsi_df.groupby(['CdrNo', 'IMSI'], dropna=False).agg(
+                    Total_Calls=('IMSI', 'count'),
+                    Days=('DateStr', lambda s: s.nunique()),
+                    First_dt=('start_dt', 'min'),
+                    Last_dt=('start_dt', 'max'),
+                    Total_Duration=('Duration', 'sum'),
+                    OutCalls=('CallTypeStd', lambda s: (s == 'CALL_OUT').sum()),
+                    InCalls=('CallTypeStd', lambda s: (s == 'CALL_IN').sum()),
+                    OutSms=('CallTypeStd', lambda s: (s == 'SMS_OUT').sum()),
+                    InSms=('CallTypeStd', lambda s: (s == 'SMS_IN').sum())
+                ).reset_index()
+                
+                # Deduplicate by keeping highest activity per IMSI  
+                imsi_period = g.loc[g.groupby(['CdrNo', 'IMSI'])['Total_Calls'].idxmax()].reset_index(drop=True)
+                
+                imsi_period = pd.DataFrame({
+                    'CdrNo': imsi_period['CdrNo'],
+                    'IMSI': imsi_period['IMSI'],
+                    'Total Calls': imsi_period['Total_Calls'],
+                    'Days': imsi_period['Days'],
+                    'Out Calls': imsi_period['OutCalls'],
+                    'In Calls': imsi_period['InCalls'],
+                    'Out Sms': imsi_period['OutSms'],
+                    'In Sms': imsi_period['InSms'],
+                    'Other Calls': 0,
+                    'Total Duration': imsi_period['Total_Duration'],
+                    'First Call Date': imsi_period['First_dt'].dt.date.apply(fmt_date_dMonY),
+                    'First Call Time': imsi_period['First_dt'].dt.time.apply(fmt_time_HMS),
+                    'Last Call Date': imsi_period['Last_dt'].dt.date.apply(fmt_date_dMonY),
+                    'Last Call Time': imsi_period['Last_dt'].dt.time.apply(fmt_time_HMS)
+                })
             else:
                 imsi_period = pd.DataFrame()
             
@@ -258,37 +531,108 @@ class ExcelGenerator:
             return pd.DataFrame(), pd.DataFrame()
 
     def create_night_day_analysis(self, df):
-        """Create night/day analysis sheets"""
+        """Create night/day analysis sheets with comprehensive columns"""
         try:
             # Night analysis (18:00-06:00)
             night_df = df[df['IsNight'] == True].copy()
             day_df = df[df['IsNight'] == False].copy()
             
-            # Night_Mapping
-            night_cols = ['DateStr','TimeStr','Counterparty','CallTypeStd','Duration','FirstCellCity','LastCellCity','IMEI']
-            night_mapping = self.safe_reindex_columns(night_df, night_cols)
+            # Helper function to create mapping format
+            def create_mapping_format(data_df):
+                if len(data_df) == 0:
+                    return pd.DataFrame()
+                    
+                n = len(data_df)
+                empty_series = lambda val="": pd.Series([val]*n)
+                
+                return pd.DataFrame({
+                    'CdrNo': data_df['CdrNo'].fillna('').astype(str),
+                    'B Party': data_df['Counterparty'].apply(self.clean_text),
+                    'Date': data_df['DateStr'].fillna('').astype(str),
+                    'Time': data_df['TimeStr'].fillna('').astype(str),
+                    'Duration': data_df['Duration'].fillna(0).astype('Int64'),
+                    'Call Type': data_df['CallTypeStd'].fillna('').astype(str),
+                    'First Cell ID': data_df['FirstCellID'].apply(self.clean_text),
+                    'First Cell ID Address': data_df['FirstCellAddr'].apply(self.clean_text),
+                    'Last Cell ID': data_df['LastCellID'].apply(self.clean_text),
+                    'Last Cell ID Address': data_df['LastCellAddr'].apply(self.clean_text),
+                    'IMEI': data_df['IMEI'].apply(self.clean_text),
+                    'IMEI Manufacturer': empty_series(""),
+                    'Device Type': empty_series(""),
+                    'IMSI': data_df['IMSI'].apply(self.clean_text),
+                    'Roaming': data_df['Circle'].fillna("").astype(str),
+                    'B Party Provider': empty_series(""),
+                    'Main City(First CellID)': data_df['FirstCellCity'].apply(self.clean_text),
+                    'Sub City(First CellID)': empty_series(""),
+                    'Lat-Long-Azimuth (First CellID)': empty_series(""),
+                    'Crime': empty_series(""),
+                    'Circle': data_df['Circle'].fillna("").astype(str),
+                    'Operator': data_df['operator'].fillna("").astype(str),
+                    'CallForward': data_df.get('CallForward', empty_series()).apply(self.clean_text),
+                    'LRN': data_df.get('LRN', empty_series()).apply(self.clean_text),
+                    'Location': empty_series("")
+                })
             
-            # Night_MaxStay
-            if len(night_df) > 0:
-                night_stay = night_df.groupby('FirstCellCity')['start_dt'].agg(['min', 'max', 'count']).reset_index()
-                night_stay['Duration_Hours'] = ((night_stay['max'] - night_stay['min']).dt.total_seconds() / 3600).round(2)
-                night_stay = night_stay.sort_values('Duration_Hours', ascending=False).head(50)
-                night_stay.columns = ['Location', 'First_Seen', 'Last_Seen', 'Record_Count', 'Duration_Hours']
-            else:
-                night_stay = pd.DataFrame()
+            # Helper function to create MaxStay format
+            def create_maxstay_format(data_df):
+                if len(data_df) == 0:
+                    return pd.DataFrame()
+                    
+                sub = data_df[data_df['FirstCellID'].astype(str).str.strip() != ""].copy()
+                if sub.empty:
+                    return pd.DataFrame()
+                
+                g = sub.groupby(['CdrNo', 'FirstCellID'], dropna=False).agg(
+                    Total_Calls=('FirstCellID', 'count'),
+                    Days=('DateStr', lambda s: s.nunique()),
+                    TowerAddress=('FirstCellAddr', lambda s: s.replace("", np.nan).dropna().iloc[0] if len(s.replace("", np.nan).dropna()) > 0 else ""),
+                    First_dt=('start_dt', 'min'),
+                    Last_dt=('start_dt', 'max'),
+                    Roaming=('Circle', lambda s: s.replace("", np.nan).dropna().iloc[0] if len(s.replace("", np.nan).dropna()) > 0 else "")
+                ).reset_index()
+                
+                def fmt_date_dMonY(d):
+                    if pd.isna(d) or d is None:
+                        return ""
+                    try:
+                        return pd.to_datetime(d).strftime("%d/%b/%Y")
+                    except Exception:
+                        return ""
+                
+                def fmt_time_HMS(t):
+                    if pd.isna(t) or t is None:
+                        return ""
+                    try:
+                        import datetime as _dt
+                        if isinstance(t, _dt.time):
+                            return t.strftime("%H:%M:%S")
+                        if isinstance(t, _dt.date) and not isinstance(t, _dt.datetime):
+                            return ""
+                        return pd.to_datetime(t).strftime("%H:%M:%S")
+                    except Exception:
+                        return ""
+                
+                return pd.DataFrame({
+                    'CdrNo': g['CdrNo'],
+                    'Cell ID': g['FirstCellID'],
+                    'Total Calls': g['Total_Calls'],
+                    'Days': g['Days'],
+                    'Tower Address': g['TowerAddress'].apply(self.clean_text),
+                    'Latitude': "",
+                    'Longitude': "",
+                    'Azimuth': "",
+                    'Roaming': g['Roaming'],
+                    'First Call Date': g['First_dt'].dt.date.apply(fmt_date_dMonY),
+                    'First Call Time': g['First_dt'].dt.time.apply(fmt_time_HMS),
+                    'Last Call Date': g['Last_dt'].dt.date.apply(fmt_date_dMonY),
+                    'Last Call Time': g['Last_dt'].dt.time.apply(fmt_time_HMS)
+                })
             
-            # Day_Mapping
-            day_cols = ['DateStr','TimeStr','Counterparty','CallTypeStd','Duration','FirstCellCity','LastCellCity','IMEI']
-            day_mapping = self.safe_reindex_columns(day_df, day_cols)
-            
-            # Day_MaxStay
-            if len(day_df) > 0:
-                day_stay = day_df.groupby('FirstCellCity')['start_dt'].agg(['min', 'max', 'count']).reset_index()
-                day_stay['Duration_Hours'] = ((day_stay['max'] - day_stay['min']).dt.total_seconds() / 3600).round(2)
-                day_stay = day_stay.sort_values('Duration_Hours', ascending=False).head(50)
-                day_stay.columns = ['Location', 'First_Seen', 'Last_Seen', 'Record_Count', 'Duration_Hours']
-            else:
-                day_stay = pd.DataFrame()
+            # Create all four sheets
+            night_mapping = create_mapping_format(night_df)
+            night_stay = create_maxstay_format(night_df)
+            day_mapping = create_mapping_format(day_df)
+            day_stay = create_maxstay_format(day_df)
             
             return night_mapping, night_stay, day_mapping, day_stay
             
@@ -297,26 +641,99 @@ class ExcelGenerator:
             return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
     def create_location_analysis_sheets(self, df):
-        """Create location-based analysis sheets"""
+        """Create comprehensive location-based analysis sheets"""
         try:
-            # WorkHomeLocation - most frequent locations
+            # WorkHomeLocation - comprehensive location analysis
             if len(df) > 0 and 'FirstCellCity' in df.columns:
-                location_freq = df['FirstCellCity'].value_counts().reset_index()
-                location_freq.columns = ['Location', 'Frequency']
-                work_home_locations = location_freq.head(20)
+                sub = df[df['FirstCellCity'].astype(str).str.strip() != ""].copy()
+                if not sub.empty:
+                    g = sub.groupby(['CdrNo', 'FirstCellCity'], dropna=False).agg(
+                        Total_Calls=('FirstCellCity', 'count'),
+                        Days=('DateStr', lambda s: s.nunique()),
+                        Out_Calls=('CallTypeStd', lambda s: (s == 'CALL_OUT').sum()),
+                        In_Calls=('CallTypeStd', lambda s: (s == 'CALL_IN').sum()),
+                        Out_Sms=('CallTypeStd', lambda s: (s == 'SMS_OUT').sum()),
+                        In_Sms=('CallTypeStd', lambda s: (s == 'SMS_IN').sum()),
+                        Total_Duration=('Duration', 'sum'),
+                        First_dt=('start_dt', 'min'),
+                        Last_dt=('start_dt', 'max'),
+                        Tower_Address=('FirstCellAddr', lambda s: s.replace("", np.nan).dropna().iloc[0] if len(s.replace("", np.nan).dropna()) > 0 else "")
+                    ).reset_index()
+                    
+                    def fmt_date_dMonY(d):
+                        if pd.isna(d) or d is None:
+                            return ""
+                        try:
+                            return pd.to_datetime(d).strftime("%d/%b/%Y")
+                        except Exception:
+                            return ""
+                    
+                    def fmt_time_HMS(t):
+                        if pd.isna(t) or t is None:
+                            return ""
+                        try:
+                            import datetime as _dt
+                            if isinstance(t, _dt.time):
+                                return t.strftime("%H:%M:%S")
+                            if isinstance(t, _dt.date) and not isinstance(t, _dt.datetime):
+                                return ""
+                            return pd.to_datetime(t).strftime("%H:%M:%S")
+                        except Exception:
+                            return ""
+                    
+                    work_home_locations = pd.DataFrame({
+                        'CdrNo': g['CdrNo'],
+                        'Cell ID': g['FirstCellCity'],
+                        'Total Calls': g['Total_Calls'],
+                        'Days': g['Days'],
+                        'Out Calls': g['Out_Calls'],
+                        'In Calls': g['In_Calls'],
+                        'Out Sms': g['Out_Sms'],
+                        'In Sms': g['In_Sms'],
+                        'Other Calls': 0,
+                        'Total Duration': g['Total_Duration'],
+                        'Tower Address': g['Tower_Address'].apply(self.clean_text),
+                        'Latitude': "",
+                        'Longitude': "",
+                        'Azimuth': "",
+                        'First Call Date': g['First_dt'].dt.date.apply(fmt_date_dMonY),
+                        'First Call Time': g['First_dt'].dt.time.apply(fmt_time_HMS),
+                        'Last Call Date': g['Last_dt'].dt.date.apply(fmt_date_dMonY),
+                        'Last Call Time': g['Last_dt'].dt.time.apply(fmt_time_HMS)
+                    })
+                else:
+                    work_home_locations = pd.DataFrame()
             else:
                 work_home_locations = pd.DataFrame()
             
-            # HomeLocationBasedonDayFirstand - locations during day hours with first/last analysis
+            # HomeLocationBasedonDayFirstand - day-time location analysis
             day_df = df[df['IsNight'] == False].copy()
             if len(day_df) > 0 and 'FirstCellCity' in day_df.columns:
-                day_locations = day_df.groupby('FirstCellCity').agg({
-                    'start_dt': ['min', 'max', 'count'],
-                    'CallTypeStd': lambda x: x.mode().iloc[0] if not x.empty else 'N/A'
-                }).reset_index()
-                
-                day_locations.columns = ['Location', 'First_Activity', 'Last_Activity', 'Total_Records', 'Common_Activity']
-                home_locations = day_locations.sort_values('Total_Records', ascending=False).head(20)
+                sub = day_df[day_df['FirstCellCity'].astype(str).str.strip() != ""].copy()
+                if not sub.empty:
+                    # Get first and last records for each location
+                    location_groups = []
+                    for location, group in sub.groupby('FirstCellCity'):
+                        first_record = group.loc[group['start_dt'].idxmin()] if 'start_dt' in group.columns else group.iloc[0]
+                        last_record = group.loc[group['start_dt'].idxmax()] if 'start_dt' in group.columns else group.iloc[-1]
+                        
+                        location_groups.append({
+                            'CdrNo': first_record.get('CdrNo', ''),
+                            'Cell ID': location,
+                            'Total Calls': len(group),
+                            'Days': group['DateStr'].nunique() if 'DateStr' in group.columns else 1,
+                            'First Record': f"{first_record.get('DateStr', '')} {first_record.get('TimeStr', '')}".strip(),
+                            'Last Record': f"{last_record.get('DateStr', '')} {last_record.get('TimeStr', '')}".strip(),
+                            'Tower Address': first_record.get('FirstCellAddr', ''),
+                            'Latitude': "",
+                            'Longitude': "",
+                            'Azimuth': ""
+                        })
+                    
+                    home_locations = pd.DataFrame(location_groups)
+                    home_locations['Tower Address'] = home_locations['Tower Address'].apply(self.clean_text)
+                else:
+                    home_locations = pd.DataFrame()
             else:
                 home_locations = pd.DataFrame()
             
@@ -327,10 +744,9 @@ class ExcelGenerator:
             return pd.DataFrame(), pd.DataFrame()
 
     def create_isd_calls_sheet(self, df):
-        """Create ISDCalls sheet - international calls analysis"""
+        """Create ISDCalls sheet - comprehensive international calls analysis"""
         try:
             # Identify ISD calls (international calls)
-            # Assuming international numbers have country codes or specific patterns
             def is_international(number):
                 if pd.isna(number) or str(number).strip() == '':
                     return False
@@ -341,14 +757,43 @@ class ExcelGenerator:
                        num_str.startswith('+') or
                        (len(num_str) > 10 and not num_str.startswith('91')))
             
+            # Filter for calls only
             calls_df = df[df['CallTypeStd'].str.startswith('CALL')].copy()
             if len(calls_df) > 0:
                 calls_df['IsISD'] = calls_df['Counterparty'].apply(is_international)
                 isd_calls = calls_df[calls_df['IsISD'] == True].copy()
                 
                 if len(isd_calls) > 0:
-                    isd_cols = ['DateStr', 'TimeStr', 'Counterparty', 'CallTypeStd', 'Duration', 'FirstCellCity']
-                    isd_result = self.safe_reindex_columns(isd_calls, isd_cols)
+                    n = len(isd_calls)
+                    empty_series = lambda val="": pd.Series([val]*n)
+                    
+                    isd_result = pd.DataFrame({
+                        'CdrNo': isd_calls['CdrNo'].fillna('').astype(str),
+                        'B Party': isd_calls['Counterparty'].apply(self.clean_text),
+                        'Date': isd_calls['DateStr'].fillna('').astype(str),
+                        'Time': isd_calls['TimeStr'].fillna('').astype(str),
+                        'Duration': isd_calls['Duration'].fillna(0).astype('Int64'),
+                        'Call Type': isd_calls['CallTypeStd'].fillna('').astype(str),
+                        'First Cell ID': isd_calls['FirstCellID'].apply(self.clean_text),
+                        'First Cell ID Address': isd_calls['FirstCellAddr'].apply(self.clean_text),
+                        'Last Cell ID': isd_calls['LastCellID'].apply(self.clean_text),
+                        'Last Cell ID Address': isd_calls['LastCellAddr'].apply(self.clean_text),
+                        'IMEI': isd_calls['IMEI'].apply(self.clean_text),
+                        'IMEI Manufacturer': empty_series(""),
+                        'Device Type': empty_series(""),
+                        'IMSI': isd_calls['IMSI'].apply(self.clean_text),
+                        'Roaming': isd_calls['Circle'].fillna("").astype(str),
+                        'B Party Provider': empty_series(""),
+                        'Main City(First CellID)': isd_calls['FirstCellCity'].apply(self.clean_text),
+                        'Sub City(First CellID)': empty_series(""),
+                        'Lat-Long-Azimuth (First CellID)': empty_series(""),
+                        'Crime': empty_series(""),
+                        'Circle': isd_calls['Circle'].fillna("").astype(str),
+                        'Operator': isd_calls['operator'].fillna("").astype(str),
+                        'CallForward': isd_calls.get('CallForward', empty_series()).apply(self.clean_text),
+                        'LRN': isd_calls.get('LRN', empty_series()).apply(self.clean_text),
+                        'Location': empty_series("")
+                    })
                 else:
                     isd_result = pd.DataFrame()
             else:
