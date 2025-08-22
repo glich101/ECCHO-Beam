@@ -29,7 +29,7 @@ class ExcelGenerator:
     
     def clean_text(self, s):
         """Clean and normalize text"""
-        if s is None or (isinstance(s, float) and np.isnan(s)): 
+        if s is None or (isinstance(s, float) and np.isnan(s)) or str(s).strip() in ['', 'nan', 'None', 'NaN']: 
             return ""
         import re
         return re.sub(r"\s+", " ", str(s)).strip()
@@ -533,28 +533,35 @@ class ExcelGenerator:
     def create_night_day_analysis(self, df):
         """Create night/day analysis sheets with comprehensive columns"""
         try:
-            # Debug: Check if IsNight column exists and has values
-            logging.info(f"Total records: {len(df)}")
-            if 'IsNight' in df.columns:
-                night_count = df['IsNight'].sum()
-                logging.info(f"Night records found: {night_count}")
-            else:
-                logging.warning("IsNight column not found")
+            logging.info(f"Starting night/day analysis with {len(df)} total records")
             
-            # Night analysis (18:00-06:00) - be more flexible with the filter
-            if 'IsNight' in df.columns:
+            # Ensure we have time data to work with
+            if 'Hour' not in df.columns and 'start_dt' in df.columns:
+                df['Hour'] = pd.to_datetime(df['start_dt'], errors='coerce').dt.hour
+                logging.info("Generated Hour column from start_dt")
+            
+            # Create or fix IsNight column
+            if 'Hour' in df.columns:
+                df['IsNight'] = df['Hour'].apply(lambda h: (h >= 18 or h < 6) if pd.notna(h) else False)
+                night_count = df['IsNight'].sum()
+                day_count = len(df) - night_count
+                logging.info(f"Night time records (18:00-06:00): {night_count}")
+                logging.info(f"Day time records (06:00-18:00): {day_count}")
+                
+                # Show sample of hour distribution
+                if 'Hour' in df.columns:
+                    hour_dist = df['Hour'].value_counts().sort_index().head(24)
+                    logging.info(f"Hour distribution sample: {dict(hour_dist)}")
+                
                 night_df = df[df['IsNight'] == True].copy()
                 day_df = df[df['IsNight'] == False].copy()
+                
+                logging.info(f"Night records after filtering: {len(night_df)}")
+                logging.info(f"Day records after filtering: {len(day_df)}")
             else:
-                # Fallback: create IsNight based on Hour if available
-                if 'Hour' in df.columns:
-                    df['IsNight'] = df['Hour'].apply(lambda h: h >= 18 or h < 6 if pd.notna(h) else False)
-                    night_df = df[df['IsNight'] == True].copy()
-                    day_df = df[df['IsNight'] == False].copy()
-                else:
-                    # If no time data, split randomly for testing
-                    night_df = df.copy()
-                    day_df = df.copy()
+                logging.warning("No time data available for night/day analysis")
+                # Return empty dataframes if no time data
+                return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
             
             # Helper function to create mapping format
             def create_mapping_format(data_df):
@@ -765,33 +772,37 @@ class ExcelGenerator:
     def create_isd_calls_sheet(self, df):
         """Create ISDCalls sheet - comprehensive international calls analysis"""
         try:
-            # Identify ISD calls (international calls) - more flexible logic
+            # Identify ISD calls (international calls) - CONSERVATIVE logic to avoid false positives
             def is_international(number):
                 if pd.isna(number) or str(number).strip() == '':
                     return False
                 num_str = str(number).strip()
                 
                 # Remove common prefixes and clean
-                num_clean = num_str.replace('+', '').replace('-', '').replace(' ', '')
+                num_clean = num_str.replace('+', '').replace('-', '').replace(' ', '').replace('(', '').replace(')', '')
                 
-                # Check for international patterns:
-                # 1. Starts with 00 (international prefix)
-                # 2. Starts with + 
-                # 3. Very long numbers (>12 digits)
-                # 4. Numbers that don't start with 91 (India) but are long
-                # 5. Country codes like 1 (US), 44 (UK), 86 (China), etc.
+                # CONSERVATIVE International patterns - avoid false positives:
+                # 1. Explicitly starts with 00 (international prefix)
+                # 2. Explicitly starts with + 
+                # 3. Starts with specific country codes that are unambiguous
                 
                 is_intl = (
+                    # Clear international indicators
                     num_str.startswith('00') or 
                     num_str.startswith('+') or
-                    len(num_clean) > 12 or
-                    (len(num_clean) > 10 and not num_clean.startswith('91')) or
-                    # Common country codes at start
-                    (len(num_clean) >= 10 and num_clean[:1] in ['1'] and len(num_clean) == 11) or  # US/Canada
-                    (len(num_clean) >= 10 and num_clean[:2] in ['44', '86', '33', '49', '39', '81']) or  # UK, China, France, Germany, Italy, Japan
-                    (len(num_clean) >= 10 and num_clean[:3] in ['971', '966', '974']) or  # UAE, Saudi, Qatar
-                    # Any number starting with non-Indian mobile prefixes
-                    (len(num_clean) >= 8 and not num_clean.startswith(('91', '6', '7', '8', '9')))
+                    # US/Canada numbers (1 followed by 10 digits)
+                    (num_clean.startswith('1') and len(num_clean) == 11 and num_clean[1:2] in ['2','3','4','5','6','7','8','9']) or
+                    # Common international country codes (but be specific)
+                    (num_clean.startswith('44') and len(num_clean) >= 12) or  # UK
+                    (num_clean.startswith('86') and len(num_clean) >= 12) or  # China
+                    (num_clean.startswith('33') and len(num_clean) >= 11) or  # France
+                    (num_clean.startswith('49') and len(num_clean) >= 12) or  # Germany
+                    (num_clean.startswith('81') and len(num_clean) >= 11) or  # Japan
+                    (num_clean.startswith('971') and len(num_clean) >= 11) or  # UAE
+                    (num_clean.startswith('966') and len(num_clean) >= 11) or  # Saudi Arabia
+                    (num_clean.startswith('974') and len(num_clean) >= 10) or  # Qatar
+                    # Very clearly international (very long numbers)
+                    (len(num_clean) > 13 and num_clean.isdigit())
                 )
                 
                 return is_intl
@@ -813,64 +824,58 @@ class ExcelGenerator:
                 
                 isd_calls = calls_df[calls_df['IsISD'] == True].copy()
                 
-                # If no ISD calls found, let's be more lenient
+                # Log sample of what we're analyzing for debugging
                 if len(isd_calls) == 0:
-                    logging.info("No ISD calls found with strict criteria, trying lenient approach")
-                    # More lenient: any number that's not a typical 10-digit Indian number
-                    def is_international_lenient(number):
-                        if pd.isna(number) or str(number).strip() == '':
-                            return False
-                        num_str = str(number).strip()
-                        num_clean = num_str.replace('+', '').replace('-', '').replace(' ', '').replace('(', '').replace(')', '')
-                        
-                        # Any number that doesn't look like a standard Indian mobile (10 digits starting with 6,7,8,9)
-                        if len(num_clean) != 10:
-                            return True
-                        if not num_clean.isdigit():
-                            return True
-                        if not num_clean.startswith(('6', '7', '8', '9')):
-                            return True
-                        return False
-                    
-                    calls_df['IsISD'] = calls_df['Counterparty'].apply(is_international_lenient)
-                    isd_count_lenient = calls_df['IsISD'].sum()
-                    logging.info(f"Lenient approach found {isd_count_lenient} potential ISD calls")
-                    isd_calls = calls_df[calls_df['IsISD'] == True].copy()
+                    sample_nums = calls_df['Counterparty'].head(20).tolist()
+                    logging.info(f"No ISD calls found. Sample numbers analyzed: {sample_nums[:10]}")
+                    # Don't use lenient approach to avoid false positives
+                    logging.info("Using conservative ISD detection to avoid false positives")
                 
                 if len(isd_calls) > 0:
-                    n = len(isd_calls)
-                    empty_series = lambda val="": pd.Series([val]*n)
+                    # Remove any rows with empty/null counterparty to avoid blank rows
+                    isd_calls = isd_calls[isd_calls['Counterparty'].astype(str).str.strip() != ''].copy()
                     
-                    isd_result = pd.DataFrame({
-                        'CdrNo': isd_calls['CdrNo'].fillna('').astype(str),
-                        'B Party': isd_calls['Counterparty'].apply(self.clean_text),
-                        'Date': isd_calls['DateStr'].fillna('').astype(str),
-                        'Time': isd_calls['TimeStr'].fillna('').astype(str),
-                        'Duration': isd_calls['Duration'].fillna(0).astype('Int64'),
-                        'Call Type': isd_calls['CallTypeStd'].fillna('').astype(str),
-                        'First Cell ID': isd_calls['FirstCellID'].apply(self.clean_text),
-                        'First Cell ID Address': isd_calls['FirstCellAddr'].apply(self.clean_text),
-                        'Last Cell ID': isd_calls['LastCellID'].apply(self.clean_text),
-                        'Last Cell ID Address': isd_calls['LastCellAddr'].apply(self.clean_text),
-                        'IMEI': isd_calls['IMEI'].apply(self.clean_text),
-                        'IMEI Manufacturer': empty_series(""),
-                        'Device Type': empty_series(""),
-                        'IMSI': isd_calls['IMSI'].apply(self.clean_text),
-                        'Roaming': isd_calls['Circle'].fillna("").astype(str),
-                        'B Party Provider': empty_series(""),
-                        'Main City(First CellID)': isd_calls['FirstCellCity'].apply(self.clean_text),
-                        'Sub City(First CellID)': empty_series(""),
-                        'Lat-Long-Azimuth (First CellID)': empty_series(""),
-                        'Crime': empty_series(""),
-                        'Circle': isd_calls['Circle'].fillna("").astype(str),
-                        'Operator': isd_calls['operator'].fillna("").astype(str),
-                        'CallForward': isd_calls.get('CallForward', empty_series()).apply(self.clean_text),
-                        'LRN': isd_calls.get('LRN', empty_series()).apply(self.clean_text),
-                        'Location': empty_series("")
-                    })
+                    if len(isd_calls) > 0:
+                        n = len(isd_calls)
+                        empty_series = lambda val="": pd.Series([val]*n)
+                        
+                        logging.info(f"Creating ISD sheet with {n} valid international calls")
+                    
+                        isd_result = pd.DataFrame({
+                            'CdrNo': isd_calls['CdrNo'].fillna('').astype(str),
+                            'B Party': isd_calls['Counterparty'].apply(self.clean_text),
+                            'Date': isd_calls['DateStr'].fillna('').astype(str),
+                            'Time': isd_calls['TimeStr'].fillna('').astype(str),
+                            'Duration': isd_calls['Duration'].fillna(0).astype('Int64'),
+                            'Call Type': isd_calls['CallTypeStd'].fillna('').astype(str),
+                            'First Cell ID': isd_calls['FirstCellID'].apply(self.clean_text),
+                            'First Cell ID Address': isd_calls['FirstCellAddr'].apply(self.clean_text),
+                            'Last Cell ID': isd_calls['LastCellID'].apply(self.clean_text),
+                            'Last Cell ID Address': isd_calls['LastCellAddr'].apply(self.clean_text),
+                            'IMEI': isd_calls['IMEI'].apply(self.clean_text),
+                            'IMEI Manufacturer': empty_series(""),
+                            'Device Type': empty_series(""),
+                            'IMSI': isd_calls['IMSI'].apply(self.clean_text),
+                            'Roaming': isd_calls['Circle'].fillna("").astype(str),
+                            'B Party Provider': empty_series(""),
+                            'Main City(First CellID)': isd_calls['FirstCellCity'].apply(self.clean_text),
+                            'Sub City(First CellID)': empty_series(""),
+                            'Lat-Long-Azimuth (First CellID)': empty_series(""),
+                            'Crime': empty_series(""),
+                            'Circle': isd_calls['Circle'].fillna("").astype(str),
+                            'Operator': isd_calls['operator'].fillna("").astype(str),
+                            'CallForward': isd_calls.get('CallForward', empty_series()).apply(self.clean_text),
+                            'LRN': isd_calls.get('LRN', empty_series()).apply(self.clean_text),
+                            'Location': empty_series("")
+                        })
+                    else:
+                        logging.info("No valid ISD calls after filtering blank entries")
+                        isd_result = pd.DataFrame()
                 else:
+                    logging.info("No ISD calls found")
                     isd_result = pd.DataFrame()
             else:
+                logging.info("No call records found for ISD analysis")
                 isd_result = pd.DataFrame()
             
             return isd_result
