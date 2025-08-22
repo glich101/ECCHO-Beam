@@ -60,12 +60,15 @@ class CDRProcessor:
             self.progress_callback(percent, message)
             
     def _lower_map(self, cols):
-        """Create lowercase mapping of columns"""
+        """Create lowercase mapping of columns with duplicate handling"""
         seen = {}
         for c in cols:
             cl = str(c).lower().strip()
             if cl not in seen:
                 seen[cl] = c
+            else:
+                # If we encounter a duplicate lowercase key, keep the first one
+                logging.debug(f"Duplicate lowercase column key '{cl}' found, keeping first occurrence")
         return seen
 
     def _pick(self, cols_map, df, candidates):
@@ -99,11 +102,37 @@ class CDRProcessor:
                 on_bad_lines="skip", dtype=str
             )
             
-            # Remove duplicate columns
+            # Handle duplicate columns more robustly
+            original_cols = list(df.columns)
+            duplicate_mask = pd.Index(df.columns).duplicated()
+            
+            if duplicate_mask.any():
+                logging.warning(f"Found {duplicate_mask.sum()} duplicate columns in {path}")
+                duplicate_cols = [col for col, is_dup in zip(original_cols, duplicate_mask) if is_dup]
+                logging.warning(f"Duplicate columns: {duplicate_cols}")
+                
+                # Rename duplicate columns by adding suffix
+                new_columns = []
+                col_counts = {}
+                
+                for col in original_cols:
+                    if col in col_counts:
+                        col_counts[col] += 1
+                        new_col = f"{col}_duplicate_{col_counts[col]}"
+                        new_columns.append(new_col)
+                        logging.info(f"Renamed duplicate column '{col}' to '{new_col}'")
+                    else:
+                        col_counts[col] = 0
+                        new_columns.append(col)
+                
+                df.columns = new_columns
+            
+            # Final check - remove any remaining duplicates
             df = df.loc[:, ~pd.Index(df.columns).duplicated()]
             
-            self.update_progress(20, f"Loaded {len(df)} records")
+            self.update_progress(20, f"Loaded {len(df)} records with {len(df.columns)} columns")
             logging.info(f"Successfully loaded {len(df)} records from {path}")
+            logging.info(f"Column names: {list(df.columns)[:10]}{'...' if len(df.columns) > 10 else ''}")
             
             return df
             
@@ -203,9 +232,17 @@ class CDRProcessor:
             
             if self.cancel_flag:
                 raise Exception("Processing cancelled by user")
+            
+            # Ensure no duplicate columns before processing
+            if df.columns.duplicated().any():
+                logging.warning("Found duplicate columns during standardization, removing...")
+                df = df.loc[:, ~df.columns.duplicated()]
                 
             cols = self._lower_map(df.columns)
             pick = lambda k: self._pick(cols, df, ALIASES[k])
+            
+            logging.info(f"Processing {len(df)} rows with {len(df.columns)} unique columns")
+            logging.debug(f"Available columns: {list(df.columns)[:20]}{'...' if len(df.columns) > 20 else ''}")
 
             std = pd.DataFrame({
                 'TargetRaw': pick('target_number').astype(str),
@@ -372,7 +409,21 @@ class CDRProcessor:
             std['operator'] = std['operator'].astype(str).fillna("")
 
             self.update_progress(90, "Data standardization complete")
-            logging.info(f"Successfully standardized {len(std)} records")
+            
+            # Clean up any remaining index issues and validate final dataframe
+            std = std.reset_index(drop=True)
+            
+            # Final validation
+            if std.index.duplicated().any():
+                logging.warning("Found duplicate indices, cleaning up...")
+                std = std[~std.index.duplicated()]
+                
+            # Ensure all columns are properly named and no duplicates
+            if std.columns.duplicated().any():
+                logging.warning("Found duplicate column names in final dataframe, cleaning up...")
+                std = std.loc[:, ~std.columns.duplicated()]
+            
+            logging.info(f"Successfully standardized {len(std)} records with {len(std.columns)} columns")
             
             return std
             
