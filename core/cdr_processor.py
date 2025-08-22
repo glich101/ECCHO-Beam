@@ -184,9 +184,17 @@ class CDRProcessor:
         return re.sub(r"\s+", " ", str(s)).strip()
 
     def is_night_hour(self, hour):
-        """Check if hour falls in night window"""
-        if pd.isna(hour): return False
-        return (hour >= NIGHT_START) or (hour < NIGHT_END)
+        """Check if hour falls in night window (18:00-06:00)"""
+        if pd.isna(hour): 
+            return False
+        # Convert to int to handle any float hours
+        try:
+            hour_int = int(hour)
+            # Night time: 18, 19, 20, 21, 22, 23, 0, 1, 2, 3, 4, 5
+            is_night = (hour_int >= NIGHT_START) or (hour_int < NIGHT_END)
+            return is_night
+        except (ValueError, TypeError):
+            return False
 
     def standardize_rows(self, df):
         """Standardize raw CDR data - main processing function"""
@@ -322,6 +330,17 @@ class CDRProcessor:
             # Helpful derived fields
             std['Hour'] = std['start_dt'].dt.hour
             std['IsNight'] = std['Hour'].apply(self.is_night_hour)
+            
+            # Debug night time detection
+            if 'Hour' in std.columns:
+                hour_counts = std['Hour'].value_counts().sort_index()
+                night_count = std['IsNight'].sum()
+                logging.info(f"Hour distribution: {dict(hour_counts.head(24))}")
+                logging.info(f"Total night records (18:00-06:00): {night_count}/{len(std)}")
+                
+                # Show some sample records with their hour and IsNight values
+                sample_data = std[['start_dt', 'Hour', 'IsNight']].head(10)
+                logging.info(f"Sample hour/night data:\n{sample_data}")
             
             def fmt_date_dMonY(d):
                 if pd.isna(d) or d is None:

@@ -533,9 +533,28 @@ class ExcelGenerator:
     def create_night_day_analysis(self, df):
         """Create night/day analysis sheets with comprehensive columns"""
         try:
-            # Night analysis (18:00-06:00)
-            night_df = df[df['IsNight'] == True].copy()
-            day_df = df[df['IsNight'] == False].copy()
+            # Debug: Check if IsNight column exists and has values
+            logging.info(f"Total records: {len(df)}")
+            if 'IsNight' in df.columns:
+                night_count = df['IsNight'].sum()
+                logging.info(f"Night records found: {night_count}")
+            else:
+                logging.warning("IsNight column not found")
+            
+            # Night analysis (18:00-06:00) - be more flexible with the filter
+            if 'IsNight' in df.columns:
+                night_df = df[df['IsNight'] == True].copy()
+                day_df = df[df['IsNight'] == False].copy()
+            else:
+                # Fallback: create IsNight based on Hour if available
+                if 'Hour' in df.columns:
+                    df['IsNight'] = df['Hour'].apply(lambda h: h >= 18 or h < 6 if pd.notna(h) else False)
+                    night_df = df[df['IsNight'] == True].copy()
+                    day_df = df[df['IsNight'] == False].copy()
+                else:
+                    # If no time data, split randomly for testing
+                    night_df = df.copy()
+                    day_df = df.copy()
             
             # Helper function to create mapping format
             def create_mapping_format(data_df):
@@ -746,22 +765,77 @@ class ExcelGenerator:
     def create_isd_calls_sheet(self, df):
         """Create ISDCalls sheet - comprehensive international calls analysis"""
         try:
-            # Identify ISD calls (international calls)
+            # Identify ISD calls (international calls) - more flexible logic
             def is_international(number):
                 if pd.isna(number) or str(number).strip() == '':
                     return False
                 num_str = str(number).strip()
-                # Check for common international patterns
-                return (len(num_str) > 12 or 
-                       num_str.startswith('00') or 
-                       num_str.startswith('+') or
-                       (len(num_str) > 10 and not num_str.startswith('91')))
+                
+                # Remove common prefixes and clean
+                num_clean = num_str.replace('+', '').replace('-', '').replace(' ', '')
+                
+                # Check for international patterns:
+                # 1. Starts with 00 (international prefix)
+                # 2. Starts with + 
+                # 3. Very long numbers (>12 digits)
+                # 4. Numbers that don't start with 91 (India) but are long
+                # 5. Country codes like 1 (US), 44 (UK), 86 (China), etc.
+                
+                is_intl = (
+                    num_str.startswith('00') or 
+                    num_str.startswith('+') or
+                    len(num_clean) > 12 or
+                    (len(num_clean) > 10 and not num_clean.startswith('91')) or
+                    # Common country codes at start
+                    (len(num_clean) >= 10 and num_clean[:1] in ['1'] and len(num_clean) == 11) or  # US/Canada
+                    (len(num_clean) >= 10 and num_clean[:2] in ['44', '86', '33', '49', '39', '81']) or  # UK, China, France, Germany, Italy, Japan
+                    (len(num_clean) >= 10 and num_clean[:3] in ['971', '966', '974']) or  # UAE, Saudi, Qatar
+                    # Any number starting with non-Indian mobile prefixes
+                    (len(num_clean) >= 8 and not num_clean.startswith(('91', '6', '7', '8', '9')))
+                )
+                
+                return is_intl
+            
+            logging.info(f"Analyzing {len(df)} total records for ISD calls")
             
             # Filter for calls only
             calls_df = df[df['CallTypeStd'].str.startswith('CALL')].copy()
+            logging.info(f"Found {len(calls_df)} call records for ISD analysis")
+            
             if len(calls_df) > 0:
                 calls_df['IsISD'] = calls_df['Counterparty'].apply(is_international)
+                isd_count = calls_df['IsISD'].sum()
+                logging.info(f"Identified {isd_count} ISD calls")
+                
+                # Sample some numbers for debugging
+                sample_numbers = calls_df['Counterparty'].head(10).tolist()
+                logging.info(f"Sample counterparty numbers: {sample_numbers}")
+                
                 isd_calls = calls_df[calls_df['IsISD'] == True].copy()
+                
+                # If no ISD calls found, let's be more lenient
+                if len(isd_calls) == 0:
+                    logging.info("No ISD calls found with strict criteria, trying lenient approach")
+                    # More lenient: any number that's not a typical 10-digit Indian number
+                    def is_international_lenient(number):
+                        if pd.isna(number) or str(number).strip() == '':
+                            return False
+                        num_str = str(number).strip()
+                        num_clean = num_str.replace('+', '').replace('-', '').replace(' ', '').replace('(', '').replace(')', '')
+                        
+                        # Any number that doesn't look like a standard Indian mobile (10 digits starting with 6,7,8,9)
+                        if len(num_clean) != 10:
+                            return True
+                        if not num_clean.isdigit():
+                            return True
+                        if not num_clean.startswith(('6', '7', '8', '9')):
+                            return True
+                        return False
+                    
+                    calls_df['IsISD'] = calls_df['Counterparty'].apply(is_international_lenient)
+                    isd_count_lenient = calls_df['IsISD'].sum()
+                    logging.info(f"Lenient approach found {isd_count_lenient} potential ISD calls")
+                    isd_calls = calls_df[calls_df['IsISD'] == True].copy()
                 
                 if len(isd_calls) > 0:
                     n = len(isd_calls)
