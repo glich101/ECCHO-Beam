@@ -9,7 +9,10 @@ import pandas as pd
 import numpy as np
 from openpyxl import Workbook, load_workbook
 from openpyxl.utils import get_column_letter
-from openpyxl.styles import Font, PatternFill, Alignment
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.styles.differential import DifferentialStyle
+from openpyxl.formatting.rule import ColorScaleRule, DataBarRule, CellIsRule
+from openpyxl.chart import BarChart, Reference
 import logging
 import os
 
@@ -48,19 +51,58 @@ class ExcelGenerator:
         return df.reindex(columns=cols)
 
     def format_excel_sheet(self, writer, sheet_name, df):
-        """Apply formatting to Excel sheet"""
+        """Apply enhanced formatting with colorful data visualization"""
         try:
             workbook = writer.book
             worksheet = workbook[sheet_name]
             
+            if len(df) == 0:
+                return
+            
             # Apply AutoFilter
-            if len(df) > 0:
-                worksheet.auto_filter.ref = f"A1:{get_column_letter(len(df.columns))}{len(df) + 1}"
+            worksheet.auto_filter.ref = f"A1:{get_column_letter(len(df.columns))}{len(df) + 1}"
             
             # Freeze top row
             worksheet.freeze_panes = "A2"
             
-            # Auto-fit column widths
+            # Define colors for different sheet types
+            sheet_colors = {
+                'Mapping': {'header': 'FF4472C4', 'accent': 'FFE7EFFF'},
+                'Summary': {'header': 'FF70AD47', 'accent': 'FFE8F5E8'},
+                'MaxCalls': {'header': 'FFF4B183', 'accent': 'FFFEF2E2'},
+                'MaxDuration': {'header': 'FFF4B183', 'accent': 'FFFEF2E2'},
+                'MaxStay': {'header': 'FF8FAADC', 'accent': 'FFF2F5FF'},
+                'Night_Mapping': {'header': 'FF2F5597', 'accent': 'FFE8EEFF'},
+                'Day_Mapping': {'header': 'FFFFC000', 'accent': 'FFFFF2CC'},
+                'ISDCalls': {'header': 'FFE74C3C', 'accent': 'FFFDEAEA'},
+                'RoamingPeriod': {'header': 'FF9B59B6', 'accent': 'FFF4F0FF'},
+                'IMEIPeriod': {'header': 'FF1ABC9C', 'accent': 'FFE8F5F1'},
+                'IMSIPeriod': {'header': 'FF16A085', 'accent': 'FFE8F6F3'},
+                'WorkHomeLocation': {'header': 'FF34495E', 'accent': 'FFECF0F1'},
+                'default': {'header': 'FF366092', 'accent': 'FFE7EFFF'}
+            }
+            
+            colors = sheet_colors.get(sheet_name, sheet_colors['default'])
+            
+            # Enhanced header formatting
+            header_font = Font(name='Calibri', size=11, bold=True, color='FFFFFF')
+            header_fill = PatternFill(start_color=colors['header'], end_color=colors['header'], fill_type='solid')
+            header_alignment = Alignment(horizontal='center', vertical='center')
+            thin_border = Border(
+                left=Side(style='thin', color='FFFFFF'),
+                right=Side(style='thin', color='FFFFFF'),
+                top=Side(style='thin', color='FFFFFF'),
+                bottom=Side(style='thin', color='FFFFFF')
+            )
+            
+            # Apply header formatting
+            for cell in worksheet[1]:
+                cell.font = header_font
+                cell.fill = header_fill
+                cell.alignment = header_alignment
+                cell.border = thin_border
+            
+            # Auto-fit column widths with better sizing
             for col in worksheet.columns:
                 max_length = 0
                 column = col[0].column_letter
@@ -71,14 +113,26 @@ class ExcelGenerator:
                             max_length = len(cell_value)
                     except:
                         pass
-                adjusted_width = min(max_length + 2, 50)  # Cap at 50 characters
+                # Better column width calculation
+                if max_length < 8:
+                    adjusted_width = 10
+                elif max_length < 15:
+                    adjusted_width = max_length + 3
+                else:
+                    adjusted_width = min(max_length + 2, 40)
                 worksheet.column_dimensions[column].width = adjusted_width
             
-            # Format header row
-            for cell in worksheet[1]:
-                cell.font = Font(bold=True)
-                cell.fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
-                cell.alignment = Alignment(horizontal="center")
+            # Add data visualization
+            self._add_conditional_formatting(worksheet, df, sheet_name, colors)
+            
+            # Add alternating row colors for better readability
+            if len(df) > 1:
+                for row_num in range(2, len(df) + 2):
+                    if row_num % 2 == 0:
+                        for col_num in range(1, len(df.columns) + 1):
+                            cell = worksheet.cell(row=row_num, column=col_num)
+                            if not hasattr(cell.fill, 'start_color') or not cell.fill.start_color.rgb:
+                                cell.fill = PatternFill(start_color=colors['accent'], end_color=colors['accent'], fill_type='solid')
                 
         except Exception as e:
             logging.warning(f"Error formatting sheet {sheet_name}: {e}")
@@ -883,6 +937,133 @@ class ExcelGenerator:
         except Exception as e:
             logging.error(f"Error creating ISDCalls sheet: {e}")
             return pd.DataFrame()
+    
+    def _add_conditional_formatting(self, worksheet, df, sheet_name, colors):
+        """Add conditional formatting and data visualization"""
+        try:
+            if len(df) == 0:
+                return
+            
+            max_row = len(df) + 1
+            
+            # Duration-based formatting (for sheets with Duration column)
+            duration_cols = [col for col in df.columns if 'Duration' in str(col)]
+            for col_name in duration_cols[:1]:  # Limit to first duration column
+                col_num = df.columns.get_loc(col_name) + 1
+                duration_col = get_column_letter(col_num)
+                
+                # Add data bars for duration
+                try:
+                    data_bar_rule = DataBarRule(
+                        start_type='num', start_value=0,
+                        end_type='max', end_value=None,
+                        color=colors['header'][2:],  # Remove FF prefix
+                        showValue=True
+                    )
+                    worksheet.conditional_formatting.add(
+                        f'{duration_col}2:{duration_col}{max_row}',
+                        data_bar_rule
+                    )
+                except Exception:
+                    pass  # Skip if data bar fails
+            
+            # Call count-based formatting
+            call_count_cols = [col for col in df.columns if any(x in str(col).lower() for x in ['total calls', 'calls', 'count']) and 'duration' not in str(col).lower()]
+            for col_name in call_count_cols[:2]:  # Limit to first 2 call count columns
+                col_num = df.columns.get_loc(col_name) + 1
+                col_letter = get_column_letter(col_num)
+                
+                # Color scale for call counts
+                try:
+                    color_scale = ColorScaleRule(
+                        start_type='min', start_color='FFFFFF',
+                        mid_type='percentile', mid_value=50, mid_color=colors['accent'][2:],
+                        end_type='max', end_color=colors['header'][2:]
+                    )
+                    worksheet.conditional_formatting.add(
+                        f'{col_letter}2:{col_letter}{max_row}',
+                        color_scale
+                    )
+                except Exception:
+                    pass  # Skip if color scale fails
+            
+            # Special formatting for specific sheet types
+            if sheet_name == 'Summary':
+                self._format_summary_sheet(worksheet, df)
+            elif 'MaxCalls' in sheet_name or 'MaxDuration' in sheet_name:
+                self._format_max_sheets(worksheet, df)
+            elif 'ISD' in sheet_name:
+                self._format_isd_sheet(worksheet, df)
+                
+        except Exception as e:
+            logging.warning(f"Error adding conditional formatting: {e}")
+    
+    def _format_summary_sheet(self, worksheet, df):
+        """Special formatting for Summary sheet"""
+        try:
+            max_row = len(df) + 1
+            
+            # Highlight high-activity contacts
+            if 'Total Calls' in df.columns:
+                total_calls_col = get_column_letter(df.columns.get_loc('Total Calls') + 1)
+                
+                # Highlight top performers
+                try:
+                    high_activity_rule = CellIsRule(
+                        operator='greaterThan',
+                        formula=['50'],
+                        fill=PatternFill(start_color='FFD4EDDA', end_color='FFD4EDDA', fill_type='solid')
+                    )
+                    worksheet.conditional_formatting.add(f'{total_calls_col}2:{total_calls_col}{max_row}', high_activity_rule)
+                except Exception:
+                    pass
+                
+        except Exception as e:
+            logging.warning(f"Error formatting summary sheet: {e}")
+    
+    def _format_max_sheets(self, worksheet, df):
+        """Special formatting for MaxCalls/MaxDuration sheets"""
+        try:
+            max_row = len(df) + 1
+            
+            # Gradient formatting for ranking visualization
+            if len(df) > 0 and len(df.columns) >= 3:
+                first_data_col = get_column_letter(3)  # Usually the metric column
+                try:
+                    color_scale = ColorScaleRule(
+                        start_type='max', start_color='FF28A745',
+                        mid_type='percentile', mid_value=50, mid_color='FFFFC107',
+                        end_type='min', end_color='FFDC3545'
+                    )
+                    worksheet.conditional_formatting.add(f'{first_data_col}2:{first_data_col}{max_row}', color_scale)
+                except Exception:
+                    pass
+                
+        except Exception as e:
+            logging.warning(f"Error formatting max sheets: {e}")
+    
+    def _format_isd_sheet(self, worksheet, df):
+        """Special formatting for ISD calls sheet"""
+        try:
+            max_row = len(df) + 1
+            
+            # Highlight international indicators
+            if 'B Party' in df.columns:
+                b_party_col = get_column_letter(df.columns.get_loc('B Party') + 1)
+                
+                # Highlight entries starting with + or 00
+                try:
+                    intl_rule = CellIsRule(
+                        operator='beginsWith',
+                        formula=['00'],
+                        fill=PatternFill(start_color='FFFFEAA7', end_color='FFFFEAA7', fill_type='solid')
+                    )
+                    worksheet.conditional_formatting.add(f'{b_party_col}2:{b_party_col}{max_row}', intl_rule)
+                except Exception:
+                    pass
+                
+        except Exception as e:
+            logging.warning(f"Error formatting ISD sheet: {e}")
 
     def generate_excel_file(self, df, output_path):
         """Generate complete Excel file with all 16 sheets"""

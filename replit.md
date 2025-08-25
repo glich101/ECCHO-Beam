@@ -8,10 +8,17 @@ The CDR Desktop Analyzer is a robust desktop application built for analyzing Cal
 
 Preferred communication style: Simple, everyday language.
 
+## Recent Updates (2025)
+
+### New Features Added:
+- **Dark Theme Support**: Added comprehensive dark/light theme toggle with persistent preferences
+- **Enhanced Excel Visualization**: Colorful data visualization with conditional formatting, data bars, and color-coded analysis for easier interpretation
+
 ## System Architecture
 
 ### Frontend Architecture
 - **GUI Framework**: Built using tkinter with ttk for modern styling
+- **Theme System**: Dark/light theme support with persistent user preferences via ThemeManager
 - **Component-based Design**: Modular GUI components separated into different modules (main_window.py, dialogs.py, components.py)
 - **Event-driven Architecture**: Uses threading for non-blocking UI operations during data processing
 - **Progress Tracking**: Real-time progress dialogs with cancellation support
@@ -66,7 +73,9 @@ Preferred communication style: Simple, everyday language.
 
 ### Excel Output Features
 - **openpyxl.utils**: Column letter conversion for Excel formatting
-- **openpyxl.styles**: Advanced Excel styling including fonts, fills, and alignment
+- **openpyxl.styles**: Advanced Excel styling including fonts, fills, alignment, borders, and side styles
+- **Data Visualization**: Conditional formatting with color scales, data bars, and cell highlighting rules
+- **Sheet-Specific Theming**: Color-coded headers and accent colors for different analysis types
 - **AutoFilter and Freeze Panes**: Enhanced Excel usability features
 
 ### Threading and Concurrency

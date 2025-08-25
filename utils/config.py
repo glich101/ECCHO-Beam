@@ -46,7 +46,7 @@ class Config:
         self.config['app'] = {
             'window_width': '1200',
             'window_height': '800',
-            'theme': 'default',
+            'theme': 'light',
             'auto_save_config': 'true'
         }
         

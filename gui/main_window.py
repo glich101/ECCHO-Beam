@@ -15,6 +15,7 @@ from core.cdr_processor import CDRProcessor
 from core.excel_generator import ExcelGenerator
 from gui.dialogs import ProgressDialog, PreviewDialog
 from gui.components import FileListFrame, ControlFrame, StatusFrame
+from utils.theme_manager import ThemeManager
 
 class MainWindow:
     def __init__(self, root, config):
@@ -24,6 +25,9 @@ class MainWindow:
         self.current_thread = None
         self.processor = None
         self.generator = None
+        
+        # Initialize theme manager
+        self.theme_manager = ThemeManager(root, config)
         
         self.setup_ui()
         self.setup_menu()
@@ -40,13 +44,30 @@ class MainWindow:
         self.main_frame.columnconfigure(1, weight=1)
         self.main_frame.rowconfigure(1, weight=1)
         
+        # Header frame with title and theme button
+        header_frame = ttk.Frame(self.main_frame)
+        header_frame.grid(row=0, column=0, columnspan=2, pady=(0, 20), sticky=(tk.W, tk.E))
+        header_frame.columnconfigure(0, weight=1)
+        
         # Title
         title_label = ttk.Label(
-            self.main_frame, 
+            header_frame, 
             text="CDR Desktop Analyzer", 
             font=('Arial', 16, 'bold')
         )
-        title_label.grid(row=0, column=0, columnspan=2, pady=(0, 20))
+        title_label.grid(row=0, column=0, sticky=tk.W)
+        
+        # Theme toggle button
+        self.theme_button = ttk.Button(
+            header_frame,
+            text="🌙 Dark",
+            command=self.toggle_theme,
+            width=8
+        )
+        self.theme_button.grid(row=0, column=1, sticky=tk.E)
+        
+        # Update theme button text based on current theme
+        self.update_theme_button_text()
         
         # Left panel - Controls
         left_frame = ttk.LabelFrame(self.main_frame, text="Controls", padding="10")
@@ -91,6 +112,14 @@ class MainWindow:
         menubar.add_cascade(label="Tools", menu=tools_menu)
         tools_menu.add_command(label="Preview Data", command=self.preview_data)
         tools_menu.add_command(label="Validate Files", command=self.validate_files)
+        tools_menu.add_separator()
+        tools_menu.add_command(label="Toggle Theme", command=self.toggle_theme)
+        
+        # View menu
+        view_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="View", menu=view_menu)
+        view_menu.add_command(label="Light Theme", command=lambda: self.set_theme('light'))
+        view_menu.add_command(label="Dark Theme", command=lambda: self.set_theme('dark'))
         
         # Help menu
         help_menu = tk.Menu(menubar, tearoff=0)
@@ -372,3 +401,34 @@ For support, check the application logs in the Status panel.
     def is_processing(self):
         """Check if processing is currently active"""
         return self.is_processing_flag
+    
+    def toggle_theme(self):
+        """Toggle between light and dark themes"""
+        try:
+            new_theme = self.theme_manager.toggle_theme()
+            self.update_theme_button_text()
+            logging.info(f"Switched to {new_theme} theme")
+            
+        except Exception as e:
+            logging.error(f"Error toggling theme: {e}")
+    
+    def set_theme(self, theme_name):
+        """Set specific theme"""
+        try:
+            self.theme_manager.apply_theme(theme_name)
+            self.update_theme_button_text()
+            logging.info(f"Applied {theme_name} theme")
+            
+        except Exception as e:
+            logging.error(f"Error setting theme: {e}")
+    
+    def update_theme_button_text(self):
+        """Update theme button text based on current theme"""
+        try:
+            current_theme = self.theme_manager.get_current_theme()
+            if current_theme == 'light':
+                self.theme_button.config(text="🌙 Dark")
+            else:
+                self.theme_button.config(text="☀️ Light")
+        except Exception as e:
+            logging.error(f"Error updating theme button: {e}")
