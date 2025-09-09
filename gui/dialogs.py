@@ -172,7 +172,7 @@ class PreviewDialog:
             )
             
             # Update info
-            file_size = pd.io.common.get_filepath_or_buffer(self.file_path)[0]
+            file_size = pd.io.common.get_filepath_or_buffer(self.file_path)[0] # type: ignore
             try:
                 import os
                 size_mb = os.path.getsize(self.file_path) / (1024 * 1024)

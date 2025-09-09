@@ -1,8 +1,10 @@
-#!/usr/bin/env python3
+ #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-CDR Processor - Core data processing logic
-Maintains the original processing logic while adding robustness
+CDR Processor v3 (final patched)
+- Produces standardized DataFrame for the 9 Excel sheets
+- Keeps public API same as v1
+- Fix: always produce CALL_DURATION (no CALL_DURATION_SEC mismatch)
 """
 
 import pandas as pd
@@ -12,11 +14,11 @@ import os
 from datetime import datetime
 import logging
 
-# Configuration constants
-NIGHT_START = 18
-NIGHT_END = 6
+# constants
+NIGHT_START = 21
+NIGHT_END = 7
 
-# Alias map for common column name variants (from original script)
+# aliases for column detection
 ALIASES = {
     "target_number": ["target /a party number","target no","cdr party no","target"],
     "a_party": ["calling party telephone number","a party number","msisdn a","a_number","calling party"],
@@ -45,104 +47,52 @@ ALIASES = {
     "operator": ["operator","service provider","sp","provider"]
 }
 
+
 class CDRProcessor:
     def __init__(self, progress_callback=None):
         self.progress_callback = progress_callback
         self.cancel_flag = False
-        
+
     def set_cancel_flag(self):
-        """Set flag to cancel processing"""
         self.cancel_flag = True
-        
+
     def update_progress(self, percent, message=""):
-        """Update progress if callback is available"""
         if self.progress_callback:
             self.progress_callback(percent, message)
-            
+
     def _lower_map(self, cols):
-        """Create lowercase mapping of columns with duplicate handling"""
-        seen = {}
-        for c in cols:
-            cl = str(c).lower().strip()
-            if cl not in seen:
-                seen[cl] = c
-            else:
-                # If we encounter a duplicate lowercase key, keep the first one
-                logging.debug(f"Duplicate lowercase column key '{cl}' found, keeping first occurrence")
-        return seen
+        return {str(c).lower().strip(): c for c in cols}
 
     def _pick(self, cols_map, df, candidates):
-        """Pick column from dataframe based on candidates"""
         for c in candidates:
             if c in cols_map:
                 return df[cols_map[c]]
-        return pd.Series([np.nan]*len(df))
+        return pd.Series([np.nan]*len(df), index=df.index)
 
     def detect_header_start(self, path):
-        """Detect where the actual header starts in CSV file"""
         try:
             with open(path, "r", encoding="utf-8", errors="ignore") as f:
-                lines = f.readlines()
-            for i, line in enumerate(lines):
-                l = line.lower()
-                if ("calling party telephone number" in l) or ("target /a party number" in l) or ("target no" in l):
-                    return i
-        except Exception as e:
-            logging.warning(f"Error detecting header start: {e}")
+                for i, line in enumerate(f):
+                    l = line.lower()
+                    if ("calling party telephone number" in l) or ("target /a party number" in l) or ("target no" in l):
+                        return i
+        except Exception:
+            pass
         return 0
 
     def load_csv_file(self, path):
-        """Load CSV file with robust error handling"""
         try:
-            self.update_progress(10, f"Loading file: {os.path.basename(path)}")
-            
+            self.update_progress(10, f"Loading {os.path.basename(path)}")
             start = self.detect_header_start(path)
-            df = pd.read_csv(
-                path, engine="python", sep=",", header=0, skiprows=start,
-                on_bad_lines="skip", dtype=str
-            )
-            
-            # Handle duplicate columns more robustly
-            original_cols = list(df.columns)
-            duplicate_mask = pd.Index(df.columns).duplicated()
-            
-            if duplicate_mask.any():
-                logging.warning(f"Found {duplicate_mask.sum()} duplicate columns in {path}")
-                duplicate_cols = [col for col, is_dup in zip(original_cols, duplicate_mask) if is_dup]
-                logging.warning(f"Duplicate columns: {duplicate_cols}")
-                
-                # Rename duplicate columns by adding suffix
-                new_columns = []
-                col_counts = {}
-                
-                for col in original_cols:
-                    if col in col_counts:
-                        col_counts[col] += 1
-                        new_col = f"{col}_duplicate_{col_counts[col]}"
-                        new_columns.append(new_col)
-                        logging.info(f"Renamed duplicate column '{col}' to '{new_col}'")
-                    else:
-                        col_counts[col] = 0
-                        new_columns.append(col)
-                
-                df.columns = new_columns
-            
-            # Final check - remove any remaining duplicates
+            df = pd.read_csv(path, engine="python", sep=",", header=0, skiprows=start, dtype=str, on_bad_lines="skip")
             df = df.loc[:, ~pd.Index(df.columns).duplicated()]
-            
-            self.update_progress(20, f"Loaded {len(df)} records with {len(df.columns)} columns")
-            logging.info(f"Successfully loaded {len(df)} records from {path}")
-            logging.info(f"Column names: {list(df.columns)[:10]}{'...' if len(df.columns) > 10 else ''}")
-            
+            self.update_progress(20, f"Loaded {len(df)} rows")
             return df
-            
         except Exception as e:
-            error_msg = f"Error loading CSV file {path}: {str(e)}"
-            logging.error(error_msg)
-            raise Exception(error_msg)
+            logging.error(f"Error loading {path}: {e}")
+            raise
 
     def to_seconds(self, x):
-        """Convert duration to seconds"""
         if pd.isna(x): return 0
         s = str(x).strip().strip("'")
         if s == "": return 0
@@ -162,7 +112,6 @@ class CDRProcessor:
             return 0
 
     def parse_time_field(self, x):
-        """Parse time field from various formats"""
         s = str(x).strip().strip("'")
         for fmt in ("%H:%M:%S","%H:%M","%I:%M:%S %p","%I:%M %p"):
             try:
@@ -182,77 +131,51 @@ class CDRProcessor:
         return None
 
     def parse_date_field(self, x):
-        """Parse date field from various formats"""
         s = str(x).strip().strip("'").replace(".", "/")
-        for dayfirst in (True, False):
+        try:
+            return pd.to_datetime(s, dayfirst=True, errors="coerce").date()
+        except Exception:
             try:
-                return pd.to_datetime(s, dayfirst=dayfirst, errors="raise").date()
+                return pd.to_datetime(s, dayfirst=False, errors="coerce").date()
             except Exception:
-                continue
-        return None
+                return None
 
     def normalize_msisdn(self, num):
-        """Normalize MSISDN number"""
+        if pd.isna(num): return ""
         s = re.sub(r"\D", "", str(num))
         if s.startswith("0"):
-            s = s[1:]
-        if len(s) > 10 and s.startswith("91"):
+            s = s.lstrip("0")
+        if s.startswith("91") and len(s) > 10:
             s = s[2:]
         return s
 
     def contains_sender_code(self, s):
-        """Check if string contains alphanumeric sender-id"""
-        if s is None: return False
-        st = str(s).strip()
-        if st == "": return False
-        return bool(re.search(r"[A-Za-z]", st))
+        return bool(s and re.search(r"[A-Za-z]", str(s)))
 
     def clean_text(self, s):
-        """Clean and normalize text"""
-        if s is None or (isinstance(s,float) and np.isnan(s)): return ""
+        if s is None or (isinstance(s, float) and np.isnan(s)): return ""
         return re.sub(r"\s+", " ", str(s)).strip()
 
     def is_night_hour(self, hour):
-        """Check if hour falls in night window (18:00-06:00)"""
-        if pd.isna(hour): 
-            return False
-        # Convert to int to handle any float hours
         try:
-            hour_int = int(hour)
-            # Night time: 18, 19, 20, 21, 22, 23, 0, 1, 2, 3, 4, 5
-            is_night = (hour_int >= NIGHT_START) or (hour_int < NIGHT_END)
-            return is_night
-        except (ValueError, TypeError):
+            if pd.isna(hour): return False
+            h = int(hour)
+            return (h >= NIGHT_START) or (h < NIGHT_END)
+        except Exception:
             return False
 
     def standardize_rows(self, df):
-        """Standardize raw CDR data - main processing function"""
         try:
-            self.update_progress(30, "Standardizing data columns...")
-            
-            if self.cancel_flag:
-                raise Exception("Processing cancelled by user")
-            
-            # Ensure no duplicate columns before processing
-            if df.columns.duplicated().any():
-                logging.warning("Found duplicate columns during standardization, removing...")
-                df = df.loc[:, ~df.columns.duplicated()]
-                
+            self.update_progress(30, "Standardizing...")
             cols = self._lower_map(df.columns)
             pick = lambda k: self._pick(cols, df, ALIASES[k])
-            
-            logging.info(f"Processing {len(df)} rows with {len(df.columns)} unique columns")
-            logging.debug(f"Available columns: {list(df.columns)[:20]}{'...' if len(df.columns) > 20 else ''}")
 
-            std = pd.DataFrame({
+            Raw = pd.DataFrame({
                 'TargetRaw': pick('target_number').astype(str),
                 'Araw': pick('a_party').astype(str),
                 'Braw': pick('b_party').astype(str),
-                'CallForward': pick('call_forwarding').astype(str),
-                'LRN': pick('lrn_called').astype(str),
                 'CallDateRaw': pick('call_date').astype(str),
                 'CallTimeRaw': pick('call_time').astype(str),
-                'CallTermTimeRaw': pick('call_term_time').astype(str),
                 'DurationRaw': pick('duration').astype(str),
                 'CallTypeRaw': pick('call_type').astype(str),
                 'TOC': pick('toc').astype(str),
@@ -272,197 +195,113 @@ class CDRProcessor:
                 'SMSC': self._pick(cols, df, ALIASES.get('smsc', [])).astype(str)
             })
 
-            self.update_progress(40, "Parsing dates and times...")
-            
-            # Parse dates and times
-            std['DateObj'] = std['CallDateRaw'].apply(self.parse_date_field)
-            std['TimeObj'] = std['CallTimeRaw'].apply(self.parse_time_field)
-            std['start_dt'] = pd.to_datetime(
-                [pd.NaT if (d is None or t is None) else f"{d} {t}" for d,t in zip(std['DateObj'], std['TimeObj'])],
-                errors="coerce"
-            )
-            std['Duration'] = std['DurationRaw'].apply(self.to_seconds).astype('Int64')
+            Raw['DateObj'] = Raw['CallDateRaw'].apply(self.parse_date_field) # type: ignore
+            Raw['TimeObj'] = Raw['CallTimeRaw'].apply(self.parse_time_field) # type: ignore
+            Raw['start_dt'] = pd.to_datetime(
+                [pd.NaT if (d is None or pd.isna(d) or t is None) else f"{d} {t}" for d, t in zip(Raw['DateObj'], Raw['TimeObj'])],# type: ignore
+                errors="coerce" # type: ignore
+            ) # type: ignore
+            # ✅ Always keep CALL_DURATION
+            Raw['CALL_DURATION'] = Raw['DurationRaw'].apply(self.to_seconds).astype('Int64')
 
-            self.update_progress(50, "Determining call types...")
+            Raw['A_norm'] = Raw['Araw'].apply(self.normalize_msisdn)
+            Raw['B_norm'] = Raw['Braw'].apply(self.normalize_msisdn)
+            Raw['Target_norm'] = Raw['TargetRaw'].apply(self.normalize_msisdn)
 
-            # Derive call types
+            # pick main number
+            if Raw['Target_norm'].replace('', np.nan).dropna().shape[0] > 0:
+                top = Raw['Target_norm'].replace('', np.nan).mode().iat[0]
+            else:
+                combined = pd.concat([Raw['A_norm'], Raw['B_norm']], ignore_index=True)
+                combined = combined[combined != ""]
+                top = combined.mode().iat[0] if not combined.empty else ""
+            Raw['CdrNo'] = top
+
             def derive_call_type(ct, toc):
                 s = f"{ct} {toc}".lower()
                 is_sms = 'sms' in s
                 if is_sms:
-                    if 'smsin' in s or 'sms_in' in s or 'inbound' in s or 'terminat' in s or 'mt' in s:
-                        d = 'IN'
-                    elif 'smsout' in s or 'sms_out' in s or 'mo' in s or 'orig' in s:
-                        d = 'OUT'
-                    else:
-                        d = 'IN' if (' in' in s or s.strip().endswith('in')) else 'OUT'
+                    d = 'IN' if any(k in s for k in ['inbound','mt','terminat','smsin','sms_in']) else 'OUT'
                 else:
-                    if any(k in s for k in ['incoming','mt','terminating','a_in','term',' in','-in']):
+                    if any(k in s for k in ['incoming','mt','terminating',' in']):
                         d = 'IN'
-                    elif any(k in s for k in ['outgoing','mo','originating','a_out','orig',' out','-out']):
+                    elif any(k in s for k in ['outgoing','mo','originating',' out']):
                         d = 'OUT'
                     else:
                         d = 'OUT'
                 return ('SMS' if is_sms else 'CALL') + '_' + d
-            
-            std['CallTypeStd'] = [derive_call_type(ct,toc) for ct,toc in zip(std['CallTypeRaw'], std['TOC'])]
 
-            self.update_progress(60, "Normalizing phone numbers...")
+            Raw['CallTypeStd'] = [derive_call_type(ct, toc) for ct, toc in zip(Raw['CallTypeRaw'], Raw['TOC'])]
 
-            # Normalized numbers
-            std['A_norm'] = std['Araw'].apply(self.normalize_msisdn).astype(str)
-            std['B_norm'] = std['Braw'].apply(self.normalize_msisdn).astype(str)
-            std['Target_norm'] = std['TargetRaw'].apply(lambda x: self.normalize_msisdn(x) if pd.notna(x) else "")
-
-            # Determine monitored number (CdrNo)
-            if std['Target_norm'].str.strip().replace('', np.nan).dropna().shape[0] > 0:
-                try:
-                    top_target = std['Target_norm'].replace('', np.nan).mode().iat[0]
-                except Exception:
-                    top_target = ""
-            else:
-                combined = pd.concat([std['A_norm'], std['B_norm']], ignore_index=True)
-                combined = combined[combined.astype(str) != ""]
-                try:
-                    top_target = combined.mode().iat[0]
-                except Exception:
-                    top_target = ""
-            
-            top_target = str(top_target) if top_target is not None else ""
-            std['CdrNo'] = top_target
-
-            self.update_progress(70, "Processing counterparty information...")
-
-            # Counterparty selection with SMS sender-code logic
             def pick_counterparty(row):
-                a_raw = self.clean_text(row['Araw'])
-                b_raw = self.clean_text(row['Braw'])
-                a_num = str(row['A_norm'])
-                b_num = str(row['B_norm'])
+                a_raw, b_raw = row['Araw'], row['Braw']
+                a_num, b_num = row['A_norm'], row['B_norm']
                 t = str(row['CdrNo'])
                 ctype = str(row['CallTypeStd'])
-
-                # If SMS and any side has an alphanumeric sender-id, use that as "B Party"
                 if ctype.startswith("SMS"):
-                    if self.contains_sender_code(b_raw):
-                        return b_raw
-                    if self.contains_sender_code(a_raw):
-                        return a_raw
+                    if self.contains_sender_code(b_raw): return b_raw
+                    if self.contains_sender_code(a_raw): return a_raw
+                if a_num == t and b_num: return b_num
+                if b_num == t and a_num: return a_num
+                return b_num or a_num or b_raw or a_raw or ""
 
-                # Otherwise choose the opposite number of target (call cases)
-                if a_num == t and b_num:
-                    return b_num
-                if b_num == t and a_num:
-                    return a_num
-                if b_num:
-                    return b_num
-                if a_num:
-                    return a_num
-                return b_raw or a_raw or ""
+            Raw['Counterparty'] = Raw.apply(pick_counterparty, axis=1)
 
-            std['Counterparty'] = std.apply(pick_counterparty, axis=1).astype(str)
+            Raw['CALL_DATE'] = Raw['DateObj'].apply(lambda d: d.strftime("%Y-%m-%d") if pd.notna(d) else "")
+            Raw['CALL_TIME'] = Raw['TimeObj'].apply(lambda t: t.strftime("%H:%M:%S") if pd.notna(t) else "")
+            Raw['IsNight'] = Raw['start_dt'].dt.hour.apply(self.is_night_hour)
 
-            self.update_progress(80, "Adding derived fields...")
+            std = pd.DataFrame({
+                'CDR Party No': Raw['CdrNo'],
+                'Opposite Party No': Raw['Counterparty'],
+                'Opp Party-Name': Raw['Counterparty'],
+                'Opp Party-Full Address': "",
+                'Opp Party-SP State': Raw['Circle'],
+                'CALL_DATE': Raw['CALL_DATE'],
+                'CALL_TIME': Raw['CALL_TIME'],
+                'CallTypeStd': Raw['CallTypeStd'],
+                'CALL_DURATION': Raw['CALL_DURATION'],
+                'FIRST_CELL_ID_A': Raw['FirstCellID'],
+                'First_Cell_Site_Address': Raw['FirstCellAddr'],
+                'First_Cell_Site_Name-City': Raw['FirstCellCity'],
+                'First_Lat_Long': Raw['FirstLatLong'],
+                'LAST_CELL_ID_A': Raw['LastCellID'],
+                'Last_Cell_Site_Address': Raw['LastCellAddr'],
+                'Last_Cell_Site_Name-City': Raw['LastCellCity'],
+                'Last_Lat_Long': Raw['LastLatLong'],
+                'ESN_IMEI_A': Raw['IMEI'],
+                'IMSI_A': Raw['IMSI'],
+                'CUST_TYPE': "",
+                'SMSC_CENTER': Raw['SMSC'],
+                'Home Circle': Raw['HomeCircle'],
+                'ROAM_CIRCLE': Raw['Circle'],
+                'Opp Party-Activation Date': "",
+                'Opp Party-Service Provider': Raw['operator'],
+                'ID': pd.RangeIndex(start=1, stop=len(Raw)+1).astype(int)
+            })
 
-            # Helpful derived fields
-            std['Hour'] = std['start_dt'].dt.hour
-            std['IsNight'] = std['Hour'].apply(self.is_night_hour)
-            
-            # Debug night time detection
-            if 'Hour' in std.columns:
-                hour_counts = std['Hour'].value_counts().sort_index()
-                night_count = std['IsNight'].sum()
-                logging.info(f"Hour distribution: {dict(hour_counts.head(24))}")
-                logging.info(f"Total night records (18:00-06:00): {night_count}/{len(std)}")
-                
-                # Show some sample records with their hour and IsNight values
-                sample_data = std[['start_dt', 'Hour', 'IsNight']].head(10)
-                logging.info(f"Sample hour/night data:\n{sample_data}")
-            
-            def fmt_date_dMonY(d):
-                if pd.isna(d) or d is None:
-                    return ""
-                try:
-                    return pd.to_datetime(d).strftime("%d/%b/%Y")
-                except Exception:
-                    return ""
-            
-            def fmt_time_HMS(t):
-                if pd.isna(t) or t is None:
-                    return ""
-                try:
-                    import datetime as _dt
-                    if isinstance(t, _dt.time):
-                        return t.strftime("%H:%M:%S")
-                    if isinstance(t, _dt.date) and not isinstance(t, _dt.datetime):
-                        return ""
-                    return pd.to_datetime(t).strftime("%H:%M:%S")
-                except Exception:
-                    return ""
-                    
-            std['DateStr'] = std['start_dt'].dt.date.apply(fmt_date_dMonY)
-            std['TimeStr'] = std['start_dt'].dt.time.apply(fmt_time_HMS)
+            # helpers for Excel generator
+            std['start_dt'] = Raw['start_dt']
+            std['IsNight'] = Raw['IsNight']
+            std['DurationSeconds'] = Raw['CALL_DURATION']
+            return std.reset_index(drop=True)
 
-            # Clean IMEI & IMSI strings consistently
-            std['IMEI'] = std['IMEI'].apply(self.clean_text)
-            std['IMSI'] = std['IMSI'].apply(self.clean_text)
-            std['operator'] = std['operator'].astype(str).fillna("")
-
-            self.update_progress(90, "Data standardization complete")
-            
-            # Clean up any remaining index issues and validate final dataframe
-            std = std.reset_index(drop=True)
-            
-            # Final validation
-            if std.index.duplicated().any():
-                logging.warning("Found duplicate indices, cleaning up...")
-                std = std[~std.index.duplicated()]
-                
-            # Ensure all columns are properly named and no duplicates
-            if std.columns.duplicated().any():
-                logging.warning("Found duplicate column names in final dataframe, cleaning up...")
-                std = std.loc[:, ~std.columns.duplicated()]
-            
-            logging.info(f"Successfully standardized {len(std)} records with {len(std.columns)} columns")
-            
-            return std
-            
         except Exception as e:
-            error_msg = f"Error during data standardization: {str(e)}"
-            logging.error(error_msg)
-            raise Exception(error_msg)
+            logging.error(f"Error standardizing rows: {e}")
+            raise
 
     def process_files(self, file_paths):
-        """Process multiple CSV files and combine them"""
         try:
-            self.update_progress(5, "Starting file processing...")
-            
-            all_data = []
-            file_count = len(file_paths)
-            
-            for i, file_path in enumerate(file_paths):
-                if self.cancel_flag:
-                    raise Exception("Processing cancelled by user")
-                    
-                self.update_progress(5 + (i * 85 // file_count), f"Processing file {i+1} of {file_count}")
-                
-                # Load and standardize each file
-                raw_df = self.load_csv_file(file_path)
-                std_df = self.standardize_rows(raw_df)
-                all_data.append(std_df)
-                
-                logging.info(f"Processed file {i+1}/{file_count}: {os.path.basename(file_path)}")
-            
-            # Combine all data
-            self.update_progress(95, "Combining all data...")
-            combined_df = pd.concat(all_data, ignore_index=True) if all_data else pd.DataFrame()
-            
-            self.update_progress(100, f"Processing complete - {len(combined_df)} total records")
-            logging.info(f"Successfully processed {file_count} files, total records: {len(combined_df)}")
-            
-            return combined_df
-            
+            self.update_progress(5, "Starting processing files...")
+            all_dfs = []
+            for i, p in enumerate(file_paths):
+                if self.cancel_flag: raise Exception("Cancelled")
+                raw = self.load_csv_file(p)
+                std = self.standardize_rows(raw)
+                all_dfs.append(std)
+            combined = pd.concat(all_dfs, ignore_index=True) if all_dfs else pd.DataFrame()
+            self.update_progress(100, f"Processing complete: {len(combined)} records")
+            return combined
         except Exception as e:
-            error_msg = f"Error processing files: {str(e)}"
-            logging.error(error_msg)
-            raise Exception(error_msg)
+            logging.error(f"Error processing files: {e}")
+            raise

@@ -28,7 +28,7 @@ class CDRAnalyzerApp:
     def setup_logging(self):
         """Setup application logging"""
         log_level = self.config.get('logging', 'level', fallback='INFO')
-        setup_logger(log_level)
+        setup_logger(log_level)# type: ignore
         
     def handle_exception(self, exc_type, exc_value, exc_traceback):
         """Global exception handler"""
@@ -91,13 +91,13 @@ class CDRAnalyzerApp:
             if self.main_window and self.main_window.is_processing():
                 if messagebox.askyesno("Exit", "Processing is in progress. Do you want to exit anyway?"):
                     self.main_window.cancel_processing()
-                    self.root.destroy()
+                    self.root.destroy() # type: ignore
             else:
-                self.root.destroy()
+                self.root.destroy()# type: ignore
                 
         except Exception as e:
             logging.error(f"Error during application shutdown: {e}")
-            self.root.destroy()
+            self.root.destroy()    # type: ignore
 
 def main():
     """Main entry point"""

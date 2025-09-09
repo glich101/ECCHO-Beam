@@ -10,6 +10,7 @@ import threading
 import os
 import logging
 from pathlib import Path
+from PIL import Image, ImageTk  # Add this for image support
 
 from core.cdr_processor import CDRProcessor
 from core.excel_generator import ExcelGenerator
@@ -34,9 +35,20 @@ class MainWindow:
         
     def setup_ui(self):
         """Setup the main user interface"""
+        # --- Add background image ---
+        try:
+            bg_image = Image.open("assets/space_bg.png")
+            bg_photo = ImageTk.PhotoImage(bg_image)
+            self.bg_label = tk.Label(self.root, image=bg_photo)
+            self.bg_label.image = bg_photo  # Keep reference # type: ignore
+            self.bg_label.place(x=0, y=0, relwidth=1, relheight=1)
+        except Exception as e:
+            print("Background image not loaded:", e)
+        # --- End background image ---
+
         # Create main frame with padding
         self.main_frame = ttk.Frame(self.root, padding="10")
-        self.main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        self.main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S)) # type: ignore
         
         # Configure grid weights for responsive layout
         self.root.columnconfigure(0, weight=1)
@@ -46,16 +58,28 @@ class MainWindow:
         
         # Header frame with title and theme button
         header_frame = ttk.Frame(self.main_frame)
-        header_frame.grid(row=0, column=0, columnspan=2, pady=(0, 20), sticky=(tk.W, tk.E))
+        header_frame.grid(row=0, column=0, columnspan=2, pady=(0, 20), sticky=(tk.W, tk.E))# type: ignore
         header_frame.columnconfigure(0, weight=1)
-        
+
+        # --- Add logo image ---
+        try:
+            logo_img = Image.open("assets/planet_logo.png").resize((48, 48))
+            logo_photo = ImageTk.PhotoImage(logo_img)
+            self.logo_label = tk.Label(header_frame, image=logo_photo, bg="#00000000")
+            self.logo_label.image = logo_photo  # Keep reference # type: ignore
+            self.logo_label.grid(row=0, column=0, sticky=tk.W, padx=(0, 10))
+            title_col = 1
+        except Exception as e:
+            title_col = 0
+        # --- End logo image ---
+
         # Title
         title_label = ttk.Label(
             header_frame, 
             text="CDR Desktop Analyzer", 
             font=('Arial', 16, 'bold')
         )
-        title_label.grid(row=0, column=0, sticky=tk.W)
+        title_label.grid(row=0, column=title_col, sticky=tk.W)
         
         # Theme toggle button
         self.theme_button = ttk.Button(
@@ -71,27 +95,27 @@ class MainWindow:
         
         # Left panel - Controls
         left_frame = ttk.LabelFrame(self.main_frame, text="Controls", padding="10")
-        left_frame.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), padx=(0, 10))
+        left_frame.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), padx=(0, 10)) # type: ignore
         
         self.control_frame = ControlFrame(left_frame, self)
-        self.control_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        self.control_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))# type: ignore
         
         # Right panel - File list and preview
         right_frame = ttk.LabelFrame(self.main_frame, text="Files & Preview", padding="10")
-        right_frame.grid(row=1, column=1, sticky=(tk.W, tk.E, tk.N, tk.S))
+        right_frame.grid(row=1, column=1, sticky=(tk.W, tk.E, tk.N, tk.S))# type: ignore
         right_frame.columnconfigure(0, weight=1)
         right_frame.rowconfigure(0, weight=1)
         
         self.file_list_frame = FileListFrame(right_frame, self)
-        self.file_list_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
-        
+        self.file_list_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))# type: ignore
+        # type: ignore
         # Bottom panel - Status and logs
         bottom_frame = ttk.LabelFrame(self.main_frame, text="Status & Logs", padding="10")
-        bottom_frame.grid(row=2, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(10, 0))
+        bottom_frame.grid(row=2, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(10, 0))# type: ignore
         bottom_frame.columnconfigure(0, weight=1)
         
         self.status_frame = StatusFrame(bottom_frame)
-        self.status_frame.grid(row=0, column=0, sticky=(tk.W, tk.E))
+        self.status_frame.grid(row=0, column=0, sticky=(tk.W, tk.E))# type: ignore
         
     def setup_menu(self):
         """Setup application menu"""
@@ -109,7 +133,6 @@ class MainWindow:
         
         # Tools menu
         tools_menu = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="Tools", menu=tools_menu)
         tools_menu.add_command(label="Preview Data", command=self.preview_data)
         tools_menu.add_command(label="Validate Files", command=self.validate_files)
         tools_menu.add_separator()

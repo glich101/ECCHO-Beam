@@ -1,1158 +1,513 @@
-#!/usr/bin/env python3
+ #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Excel Generator - Creates all 16 Excel sheets with analysis
-Maintains original analysis logic while adding robustness
+Excel Generator v2 (final patched, fixed indentation)
+- Creates exactly 9 sheets (_01 … _09) as requested
+- Highlights important headers
+- Fix: safe handling of NaT/NaN dates in Relationship and Mobile SwitchOFF sheets
+- Backward compatibility: keep generate_excel_file()
 """
 
-import pandas as pd
-import numpy as np
-from openpyxl import Workbook, load_workbook
-from openpyxl.utils import get_column_letter
-from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-from openpyxl.styles.differential import DifferentialStyle
-from openpyxl.formatting.rule import ColorScaleRule, DataBarRule, CellIsRule
-from openpyxl.chart import BarChart, Reference
+import re
 import logging
-import os
+from datetime import date
+
+import numpy as np
+import pandas as pd
+from openpyxl import load_workbook
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.utils import get_column_letter
+
 
 class ExcelGenerator:
     def __init__(self, progress_callback=None):
         self.progress_callback = progress_callback
         self.cancel_flag = False
-        
+
     def set_cancel_flag(self):
-        """Set flag to cancel processing"""
         self.cancel_flag = True
-        
+
     def update_progress(self, percent, message=""):
-        """Update progress if callback is available"""
         if self.progress_callback:
             self.progress_callback(percent, message)
-    
+
     def clean_text(self, s):
-        """Clean and normalize text"""
-        if s is None or (isinstance(s, float) and np.isnan(s)) or str(s).strip() in ['', 'nan', 'None', 'NaN']: 
+        if s is None or (isinstance(s, float) and np.isnan(s)):
             return ""
-        import re
-        return re.sub(r"\s+", " ", str(s)).strip()
+        return str(s).strip()
 
-    def safe_reindex_columns(self, df, columns):
-        """Safely reindex dataframe columns"""
-        df = df.loc[:, ~df.columns.duplicated()]
-        cols = []
-        seen = set()
-        for c in columns:
-            if c not in seen:
-                cols.append(c); seen.add(c)
-        for c in cols:
-            if c not in df.columns:
-                df[c] = ""
-        return df.reindex(columns=cols)
-
-    def format_excel_sheet(self, writer, sheet_name, df):
-        """Apply enhanced formatting with colorful data visualization"""
+    # -------------------------
+    # Autofit and Styling
+    # -------------------------
+    def autofit_and_style(self, workbook, sheet_name, important_headers, sheet_index=0):
         try:
-            workbook = writer.book
-            worksheet = workbook[sheet_name]
-            
-            if len(df) == 0:
-                return
-            
-            # Apply AutoFilter
-            worksheet.auto_filter.ref = f"A1:{get_column_letter(len(df.columns))}{len(df) + 1}"
-            
-            # Freeze top row
-            worksheet.freeze_panes = "A2"
-            
-            # Define colors for different sheet types
-            sheet_colors = {
-                'Mapping': {'header': 'FF4472C4', 'accent': 'FFE7EFFF'},
-                'Summary': {'header': 'FF70AD47', 'accent': 'FFE8F5E8'},
-                'MaxCalls': {'header': 'FFF4B183', 'accent': 'FFFEF2E2'},
-                'MaxDuration': {'header': 'FFF4B183', 'accent': 'FFFEF2E2'},
-                'MaxStay': {'header': 'FF8FAADC', 'accent': 'FFF2F5FF'},
-                'Night_Mapping': {'header': 'FF2F5597', 'accent': 'FFE8EEFF'},
-                'Day_Mapping': {'header': 'FFFFC000', 'accent': 'FFFFF2CC'},
-                'ISDCalls': {'header': 'FFE74C3C', 'accent': 'FFFDEAEA'},
-                'RoamingPeriod': {'header': 'FF9B59B6', 'accent': 'FFF4F0FF'},
-                'IMEIPeriod': {'header': 'FF1ABC9C', 'accent': 'FFE8F5F1'},
-                'IMSIPeriod': {'header': 'FF16A085', 'accent': 'FFE8F6F3'},
-                'WorkHomeLocation': {'header': 'FF34495E', 'accent': 'FFECF0F1'},
-                'default': {'header': 'FF366092', 'accent': 'FFE7EFFF'}
-            }
-            
-            colors = sheet_colors.get(sheet_name, sheet_colors['default'])
-            
-            # Enhanced header formatting
-            header_font = Font(name='Calibri', size=11, bold=True, color='FFFFFF')
-            header_fill = PatternFill(start_color=colors['header'], end_color=colors['header'], fill_type='solid')
-            header_alignment = Alignment(horizontal='center', vertical='center')
-            thin_border = Border(
-                left=Side(style='thin', color='FFFFFF'),
-                right=Side(style='thin', color='FFFFFF'),
-                top=Side(style='thin', color='FFFFFF'),
-                bottom=Side(style='thin', color='FFFFFF')
-            )
-            
-            # Apply header formatting
-            for cell in worksheet[1]:
+            ws = workbook[sheet_name]
+            max_row = ws.max_row
+            max_col = ws.max_column
+
+            # --- Tab colors palette ---
+            tab_colors = [
+                "92D050", "4472C4", "ED7D31", "7030A0", "C00000",
+                "00B0F0", "FFC000", "548235", "2E75B6"
+            ]
+            ws.sheet_properties.tabColor = tab_colors[sheet_index % len(tab_colors)]
+
+            # Freeze top row and first column
+            ws.freeze_panes = "B2"
+
+            # --- Styles ---
+            header_font = Font(bold=True, color="FFFFFF")
+            header_alignment = Alignment(horizontal="center", vertical="center")
+            imp_fill = PatternFill(start_color="FF305496", end_color="FF305496", fill_type="solid")   # dark blue
+            normal_fill = PatternFill(start_color="FF4472C4", end_color="FF4472C4", fill_type="solid")  # lighter blue
+            alt_fill = PatternFill(start_color="FFF2F2F2", end_color="FFF2F2F2", fill_type="solid")
+            highlight_fill = PatternFill(start_color="FFFFEB9C", end_color="FFFFEB9C", fill_type="solid")  # yellow
+            thin = Side(border_style="thin", color="FF999999")
+            border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+            # --- Headers ---
+            important_indexes = []
+            for col_idx in range(1, max_col + 1):
+                cell = ws.cell(row=1, column=col_idx)
+                header_value = str(cell.value) if cell.value else ""
+
                 cell.font = header_font
-                cell.fill = header_fill
                 cell.alignment = header_alignment
-                cell.border = thin_border
-            
-            # Auto-fit column widths with better sizing
-            for col in worksheet.columns:
+                cell.border = border
+
+                if header_value in important_headers:
+                    cell.fill = imp_fill
+                    important_indexes.append(col_idx)
+                else:
+                    cell.fill = normal_fill
+
+            # --- Highlight important columns ---
+            for r in range(2, max_row + 1):
+                for col_idx in important_indexes:
+                    ws.cell(row=r, column=col_idx).fill = highlight_fill
+
+            # --- Alternating row fill for non-important cols ---
+            for r in range(2, max_row + 1):
+                if r % 2 == 0:
+                    for c in range(1, max_col + 1):
+                        if c not in important_indexes:
+                            ws.cell(row=r, column=c).fill = alt_fill
+
+            # --- Autofit columns ---
+            for col in ws.columns:
                 max_length = 0
-                column = col[0].column_letter
+                col_letter = get_column_letter(col[0].column)
                 for cell in col:
-                    try:
-                        cell_value = str(cell.value) if cell.value is not None else ""
-                        if len(cell_value) > max_length:
-                            max_length = len(cell_value)
-                    except:
-                        pass
-                # Better column width calculation
-                if max_length < 8:
-                    adjusted_width = 10
-                elif max_length < 15:
-                    adjusted_width = max_length + 3
-                else:
-                    adjusted_width = min(max_length + 2, 40)
-                worksheet.column_dimensions[column].width = adjusted_width
-            
-            # Add data visualization
-            self._add_conditional_formatting(worksheet, df, sheet_name, colors)
-            
-            # Add alternating row colors for better readability
-            if len(df) > 1:
-                for row_num in range(2, len(df) + 2):
-                    if row_num % 2 == 0:
-                        for col_num in range(1, len(df.columns) + 1):
-                            cell = worksheet.cell(row=row_num, column=col_num)
-                            if not hasattr(cell.fill, 'start_color') or not cell.fill.start_color.rgb:
-                                cell.fill = PatternFill(start_color=colors['accent'], end_color=colors['accent'], fill_type='solid')
-                
-        except Exception as e:
-            logging.warning(f"Error formatting sheet {sheet_name}: {e}")
+                    v = str(cell.value) if cell.value is not None else ""
+                    max_length = max(max_length, len(v))
+                ws.column_dimensions[col_letter].width = min(50, max(10, max_length + 3))
 
-    def create_mapping_sheet(self, df):
-        """Create Mapping sheet - comprehensive call/SMS records with all original columns"""
-        try:
-            n = len(df)
-            empty_series = lambda val="": pd.Series([val]*n)
-            
-            # Build comprehensive mapping with all original columns
-            mapping_df = pd.DataFrame({
-                'CdrNo': df['CdrNo'].fillna('').astype(str),
-                'B Party': df['Counterparty'].apply(self.clean_text),
-                'Date': df['DateStr'].fillna('').astype(str),
-                'Time': df['TimeStr'].fillna('').astype(str),
-                'Duration': df['Duration'].fillna(0).astype('Int64'),
-                'Call Type': df['CallTypeStd'].fillna('').astype(str),
-                'First Cell ID': df['FirstCellID'].apply(self.clean_text),
-                'First Cell ID Address': df['FirstCellAddr'].apply(self.clean_text),
-                'Last Cell ID': df['LastCellID'].apply(self.clean_text),
-                'Last Cell ID Address': df['LastCellAddr'].apply(self.clean_text),
-                'IMEI': df['IMEI'].apply(self.clean_text),
-                'IMEI Manufacturer': empty_series(""),
-                'Device Type': empty_series(""),
-                'IMSI': df['IMSI'].apply(self.clean_text),
-                'Roaming': df['Circle'].fillna("").astype(str),
-                'B Party Provider': empty_series(""),
-                'Main City(First CellID)': df['FirstCellCity'].apply(self.clean_text),
-                'Sub City(First CellID)': empty_series(""),
-                'Lat-Long-Azimuth (First CellID)': empty_series(""),
-                'Crime': empty_series(""),
-                'Circle': df['Circle'].fillna("").astype(str),
-                'Operator': df['operator'].fillna("").astype(str),
-                'CallForward': df.get('CallForward', empty_series()).apply(self.clean_text),
-                'LRN': df.get('LRN', empty_series()).apply(self.clean_text),
-                'Location': empty_series("")
+        except Exception as e:
+            logging.warning(f"Styling error on sheet {sheet_name}: {e}")
+
+    # -------------------------
+    # Utility
+    # -------------------------
+    def drop_empty_rows(self, df):
+        if df is None or df.empty:
+            return df
+        return df.replace(r"^\s*$", np.nan, regex=True).dropna(how="all")
+
+    # -------------------------
+    # Sheet creators (all kept as-is)
+    # -------------------------
+    def create__01_CDR_Format(self, df):
+        if df is None or df.empty:
+            return pd.DataFrame(columns=[
+                "CDR Party No", "Opposite Party No", "Opp Party-Name", "Opp Party-Full Address", "Opp Party-SP State",
+                "CALL_DATE", "CALL_TIME", "Call_Type_Std", "CALL_DURATION", "FIRST_CELL_ID_A", "First_Cell_Site_Address",
+                "First_Cell_Site_Name-City", "First_Lat_Long", "LAST_CELL_ID_A", "Last_Cell_Site_Address",
+                "Last_Cell_Site_Name-City", "Last_Lat_Long", "ESN_IMEI_A", "IMSI_A", "CUST_TYPE", "SMSC_CENTER",
+                "Home Circle", "ROAM_CIRCLE", "Opp Party-Activation Date", "Opp Party-Service Provider", "ID"
+            ])
+        out = df[[
+            "CDR Party No", "Opposite Party No", "Opp Party-Name", "Opp Party-Full Address", "Opp Party-SP State",
+            "CALL_DATE", "CALL_TIME", "CallTypeStd", "CALL_DURATION", "FIRST_CELL_ID_A", "First_Cell_Site_Address",
+            "First_Cell_Site_Name-City", "First_Lat_Long", "LAST_CELL_ID_A", "Last_Cell_Site_Address",
+            "Last_Cell_Site_Name-City", "Last_Lat_Long", "ESN_IMEI_A", "IMSI_A", "CUST_TYPE", "SMSC_CENTER",
+            "Home Circle", "ROAM_CIRCLE", "Opp Party-Activation Date", "Opp Party-Service Provider", "ID"
+        ]].copy()
+        return out.rename(columns={"CallTypeStd": "Call_Type_Std"})
+
+    def create__02_Relationship_Call_Frequ(self, df):
+        if df is None or df.empty:
+            return pd.DataFrame(columns=[
+                "ID", "CDR Party No", "Opposite Party No", "Opp Party-SP State",
+                "Opp Party-Name", "Opp Party-Full Address", "Start_Date", "End_Date",
+                "Date_Diff", "Total Event", "Call In", "Call Out", "SMS In", "SMS Out",
+                "Call In_Duration", "Call Out_Duration", "Total_Duration"
+            ])
+
+        df["date_only"] = pd.to_datetime(df["CALL_DATE"], errors="coerce").dt.date
+        grp = df.groupby(["CDR Party No", "Opposite Party No"], dropna=False)
+
+        rows = []
+        idx = 1
+
+        for (cdr, opp), g in grp:
+            if str(opp).strip() == "":
+                continue
+
+            # Only use valid dates
+            valid_dates = [d for d in g["date_only"] if isinstance(d, date) and pd.notna(d)]
+            if valid_dates:
+                start = min(valid_dates)
+                end = max(valid_dates)
+                date_diff = (end - start).days
+            else:
+                start = None
+                end = None
+                date_diff = 0
+
+            rows.append({
+                "ID": idx,
+                "CDR Party No": cdr,
+                "Opposite Party No": opp,
+                "Opp Party-SP State": g["ROAM_CIRCLE"].mode().iat[0]
+                    if not g["ROAM_CIRCLE"].replace("", np.nan).dropna().empty else "",
+                "Opp Party-Name": g["Opp Party-Name"].iloc[0]
+                    if "Opp Party-Name" in g.columns else str(opp),
+                "Opp Party-Full Address": "",
+                "Start_Date": start.strftime("%Y-%m-%d") if (start and pd.notna(start) and isinstance(start, date)) else "",
+                "End_Date": end.strftime("%Y-%m-%d") if (end and pd.notna(end) and isinstance(end, date)) else "",
+                "Date_Diff": date_diff,
+                "Total Event": len(g),
+                "Call In": int((g["CallTypeStd"] == "CALL_IN").sum()),
+                "Call Out": int((g["CallTypeStd"] == "CALL_OUT").sum()),
+                "SMS In": int((g["CallTypeStd"] == "SMS_IN").sum()),
+                "SMS Out": int((g["CallTypeStd"] == "SMS_OUT").sum()),
+                "Call In_Duration": int(g.loc[g["CallTypeStd"] == "CALL_IN", "DurationSeconds"].sum()),
+                "Call Out_Duration": int(g.loc[g["CallTypeStd"] == "CALL_OUT", "DurationSeconds"].sum()),
+                "Total_Duration": int(g["DurationSeconds"].sum())
             })
-            
-            return mapping_df
-            
-        except Exception as e:
-            logging.error(f"Error creating Mapping sheet: {e}")
-            return pd.DataFrame()
+            idx += 1
 
-    def create_summary_sheet(self, df):
-        """Create Summary sheet - comprehensive per-contact summary"""
-        try:
-            # Filter out records with blank counterparty
-            df_clean = df[df['Counterparty'].astype(str).str.strip() != ""].copy()
-            
-            if len(df_clean) == 0:
-                return pd.DataFrame()
-            
-            # Group by CdrNo and Counterparty
-            grp = df_clean.groupby(['CdrNo', 'Counterparty'], dropna=False)
-            
-            # Aggregate statistics
-            agg = grp.agg(
-                Total_Calls=('Counterparty', 'count'),
-                Total_Duration=('Duration', 'sum'),
-                First_dt=('start_dt', 'min'),
-                Last_dt=('start_dt', 'max'),
-                Total_Days=('DateStr', lambda s: s.nunique()),
-                Total_CellIds=('FirstCellID', lambda s: s.nunique()),
-                Total_IMEI=('IMEI', lambda s: s.nunique()),
-                Total_IMSI=('IMSI', lambda s: s.nunique()),
-                OutCalls=('CallTypeStd', lambda s: (s == 'CALL_OUT').sum()),
-                InCalls=('CallTypeStd', lambda s: (s == 'CALL_IN').sum()),
-                OutSms=('CallTypeStd', lambda s: (s == 'SMS_OUT').sum()),
-                InSms=('CallTypeStd', lambda s: (s == 'SMS_IN').sum()),
-                RoamCalls=('Circle', lambda s: s.replace("", np.nan).notna().sum())
-            ).reset_index()
-            
-            # Get provider information (most frequent operator per counterparty)
-            operator_map = {}
-            for cp, sub in df_clean.groupby('Counterparty'):
-                try:
-                    operator_map[cp] = sub['operator'].astype(str).mode().iat[0]
-                except Exception:
-                    operator_map[cp] = ""
-            
-            # Format dates and times
-            def fmt_date_dMonY(d):
-                if pd.isna(d) or d is None:
-                    return ""
-                try:
-                    return pd.to_datetime(d).strftime("%d/%b/%Y")
-                except Exception:
-                    return ""
-            
-            def fmt_time_HMS(t):
-                if pd.isna(t) or t is None:
-                    return ""
-                try:
-                    import datetime as _dt
-                    if isinstance(t, _dt.time):
-                        return t.strftime("%H:%M:%S")
-                    if isinstance(t, _dt.date) and not isinstance(t, _dt.datetime):
-                        return ""
-                    return pd.to_datetime(t).strftime("%H:%M:%S")
-                except Exception:
-                    return ""
-            
-            # Build comprehensive summary
-            summary_df = pd.DataFrame({
-                'CdrNo': agg['CdrNo'],
-                'B Party': agg['Counterparty'].apply(self.clean_text),
-                'Provider': agg['Counterparty'].map(operator_map).fillna(""),
-                'Type': "",
-                'Total Calls': agg['Total_Calls'],
-                'Out Calls': agg['OutCalls'],
-                'In Calls': agg['InCalls'],
-                'Out Sms': agg['OutSms'],
-                'In Sms': agg['InSms'],
-                'Other Calls': 0,
-                'Roam Calls': agg['RoamCalls'],
-                'Roam Sms': 0,
-                'Total Duration': agg['Total_Duration'],
-                'Total Days': agg['Total_Days'],
-                'Total CellIds': agg['Total_CellIds'],
-                'Total Imei': agg['Total_IMEI'],
-                'Total Imsi': agg['Total_IMSI'],
-                'First Call Date': agg['First_dt'].dt.date.apply(fmt_date_dMonY),
-                'First Call Time': agg['First_dt'].dt.time.apply(fmt_time_HMS),
-                'Last Call Date': agg['Last_dt'].dt.date.apply(fmt_date_dMonY),
-                'Last Call Time': agg['Last_dt'].dt.time.apply(fmt_time_HMS)
+        return pd.DataFrame(rows)
+
+    def create__03_Cell_ID_Frequency(self, df):
+        if df is None or df.empty:
+            return pd.DataFrame(columns=[
+                "Id", "CDR Party No", "FIRST_CELL_ID_A", "First_Cell_Site_Address",
+                "First_Lat_Long", "Total Event", "Call In", "Call Out", "SMS In", "SMS Out",
+                "Call In_Duration", "Call Out_Duration", "Total_Duration", "ROAM_CIRCLE",
+                "First_Cell_Site_Name-City"
+            ])
+
+        grp = df.groupby(["CDR Party No", "FIRST_CELL_ID_A"], dropna=False)
+        rows = []
+        idx = 1
+
+        for (cdr, cell), g in grp:
+            if str(cell).strip() == "":
+                continue
+
+            rows.append({
+                "Id": idx,
+                "CDR Party No": cdr,
+                "FIRST_CELL_ID_A": cell,
+                "First_Cell_Site_Address": g["First_Cell_Site_Address"].mode().iat[0]
+                    if not g["First_Cell_Site_Address"].replace("", np.nan).dropna().empty else "",
+                "First_Lat_Long": g["First_Lat_Long"].mode().iat[0]
+                    if not g["First_Lat_Long"].replace("", np.nan).dropna().empty else "",
+                "Total Event": len(g),
+                "Call In": int((g["CallTypeStd"] == "CALL_IN").sum()),
+                "Call Out": int((g["CallTypeStd"] == "CALL_OUT").sum()),
+                "SMS In": int((g["CallTypeStd"] == "SMS_IN").sum()),
+                "SMS Out": int((g["CallTypeStd"] == "SMS_OUT").sum()),
+                "Call In_Duration": int(g.loc[g["CallTypeStd"] == "CALL_IN", "DurationSeconds"].sum()),
+                "Call Out_Duration": int(g.loc[g["CallTypeStd"] == "CALL_OUT", "DurationSeconds"].sum()),
+                "Total_Duration": int(g["DurationSeconds"].sum()),
+                "ROAM_CIRCLE": g["ROAM_CIRCLE"].mode().iat[0]
+                    if not g["ROAM_CIRCLE"].replace("", np.nan).dropna().empty else "",
+                "First_Cell_Site_Name-City": g["First_Cell_Site_Name-City"].mode().iat[0]
+                    if not g["First_Cell_Site_Name-City"].replace("", np.nan).dropna().empty else ""
             })
-            
-            return summary_df
-            
-        except Exception as e:
-            logging.error(f"Error creating Summary sheet: {e}")
-            return pd.DataFrame()
+            idx += 1
 
-    def create_max_calls_sheet(self, df):
-        """Create MaxCalls sheet - top counterparties by call count with provider info"""
-        try:
-            df_clean = df[df['Counterparty'].astype(str).str.strip() != ""].copy()
-            if len(df_clean) == 0:
-                return pd.DataFrame()
-                
-            # Group by CdrNo and Counterparty
-            max_calls = df_clean.groupby(['CdrNo', 'Counterparty'], dropna=False).size().reset_index(name='Total Calls')
-            max_calls = max_calls[max_calls['Counterparty'].astype(str).str.strip() != ""]
-            
-            # Get provider information
-            operator_map = {}
-            for cp, sub in df_clean.groupby('Counterparty'):
-                try:
-                    operator_map[cp] = sub['operator'].astype(str).mode().iat[0]
-                except Exception:
-                    operator_map[cp] = ""
-            
-            max_calls['Provider'] = max_calls['Counterparty'].map(operator_map).fillna("")
-            max_calls = max_calls.rename(columns={'Counterparty': 'B Party'})
-            max_calls = max_calls[max_calls['B Party'].astype(str).str.strip() != ""]
-            
-            # Reorder columns
-            max_calls = max_calls[['CdrNo', 'B Party', 'Total Calls', 'Provider']]
-            
-            return max_calls
-            
-        except Exception as e:
-            logging.error(f"Error creating MaxCalls sheet: {e}")
-            return pd.DataFrame()
+        return pd.DataFrame(rows)
 
-    def create_max_duration_sheet(self, df):
-        """Create MaxDuration sheet - top counterparties by duration with provider info"""
-        try:
-            df_clean = df[df['Counterparty'].astype(str).str.strip() != ""].copy()
-            if len(df_clean) == 0:
-                return pd.DataFrame()
-                
-            # Group by CdrNo and Counterparty
-            max_dur = df_clean.groupby(['CdrNo', 'Counterparty'], dropna=False)['Duration'].sum().reset_index(name='Total Duration')
-            max_dur = max_dur[max_dur['Counterparty'].astype(str).str.strip() != ""]
-            
-            # Get provider information
-            operator_map = {}
-            for cp, sub in df_clean.groupby('Counterparty'):
-                try:
-                    operator_map[cp] = sub['operator'].astype(str).mode().iat[0]
-                except Exception:
-                    operator_map[cp] = ""
-            
-            max_dur['Provider'] = max_dur['Counterparty'].map(operator_map).fillna("")
-            max_dur = max_dur.rename(columns={'Counterparty': 'B Party'})
-            max_dur = max_dur[max_dur['B Party'].astype(str).str.strip() != ""]
-            
-            # Reorder columns
-            max_dur = max_dur[['CdrNo', 'B Party', 'Total Duration', 'Provider']]
-            
-            return max_dur
-            
-        except Exception as e:
-            logging.error(f"Error creating MaxDuration sheet: {e}")
-            return pd.DataFrame()
+    def create__04_Movement_Analysis(self, df):
+        if df is None or df.empty:
+            return pd.DataFrame(columns=[
+                "ID", "CDR Party No", "Opposite Party No", "CALL_DATE", "CALL_TIME",
+                "FIRST_CELL_ID_A", "First_Cell_Site_Name-City",
+                "First_Cell_Site_Address", "First_Lat_Long"
+            ])
 
-    def create_max_stay_sheet(self, df):
-        """Create MaxStay sheet - comprehensive location analysis"""
-        try:
-            # Filter for records with cell ID information
-            sub = df[df['FirstCellID'].astype(str).str.strip() != ""].copy()
-            if sub.empty:
-                return pd.DataFrame()
-            
-            # Group by CdrNo and FirstCellID
-            g = sub.groupby(['CdrNo', 'FirstCellID'], dropna=False).agg(
-                Total_Calls=('FirstCellID', 'count'),
-                Days=('DateStr', lambda s: s.nunique()),
-                TowerAddress=('FirstCellAddr', lambda s: s.replace("", np.nan).dropna().iloc[0] if len(s.replace("", np.nan).dropna()) > 0 else ""),
-                First_dt=('start_dt', 'min'),
-                Last_dt=('start_dt', 'max'),
-                Roaming=('Circle', lambda s: s.replace("", np.nan).dropna().iloc[0] if len(s.replace("", np.nan).dropna()) > 0 else "")
-            ).reset_index()
-            
-            # Format dates and times
-            def fmt_date_dMonY(d):
-                if pd.isna(d) or d is None:
-                    return ""
-                try:
-                    return pd.to_datetime(d).strftime("%d/%b/%Y")
-                except Exception:
-                    return ""
-            
-            def fmt_time_HMS(t):
-                if pd.isna(t) or t is None:
-                    return ""
-                try:
-                    import datetime as _dt
-                    if isinstance(t, _dt.time):
-                        return t.strftime("%H:%M:%S")
-                    if isinstance(t, _dt.date) and not isinstance(t, _dt.datetime):
-                        return ""
-                    return pd.to_datetime(t).strftime("%H:%M:%S")
-                except Exception:
-                    return ""
-            
-            # Build comprehensive MaxStay sheet
-            max_stay_df = pd.DataFrame({
-                'CdrNo': g['CdrNo'],
-                'Cell ID': g['FirstCellID'],
-                'Total Calls': g['Total_Calls'],
-                'Days': g['Days'],
-                'Tower Address': g['TowerAddress'].apply(self.clean_text),
-                'Latitude': "",
-                'Longitude': "",
-                'Azimuth': "",
-                'Roaming': g['Roaming'],
-                'First Call Date': g['First_dt'].dt.date.apply(fmt_date_dMonY),
-                'First Call Time': g['First_dt'].dt.time.apply(fmt_time_HMS),
-                'Last Call Date': g['Last_dt'].dt.date.apply(fmt_date_dMonY),
-                'Last Call Time': g['Last_dt'].dt.time.apply(fmt_time_HMS)
+        out = df[[
+            "CDR Party No", "Opposite Party No", "CALL_DATE", "CALL_TIME",
+            "FIRST_CELL_ID_A", "First_Cell_Site_Name-City",
+            "First_Cell_Site_Address", "First_Lat_Long"
+        ]].copy()
+
+        out.insert(0, "ID", range(1, len(out) + 1))
+        return out
+
+    def create__05_Imei_Used(self, df):
+        if df is None or df.empty:
+            return pd.DataFrame(columns=[
+                "ID", "CDR Party No", "CDR Party-Name", "CDR Party-Full Address",
+                "CDR Party-Service Provider", "IMEI", "First_Call", "Last_call",
+                "Total Event", "Call In", "Call Out", "SMS In", "SMS Out",
+                "Call In_Duration", "Call Out_Duration", "Total_Duration"
+            ])
+
+        grp = df[df["ESN_IMEI_A"].astype(str).str.strip() != ""].groupby(
+            ["CDR Party No", "ESN_IMEI_A"], dropna=False
+        )
+
+        rows = []
+        idx = 1
+
+        for (cdr, imei), g in grp:
+            first_dt = g["start_dt"].min()
+            last_dt = g["start_dt"].max()
+
+            rows.append({
+                "ID": idx,
+                "CDR Party No": cdr,
+                "CDR Party-Name": "",
+                "CDR Party-Full Address": "",
+                "CDR Party-Service Provider": g["Opp Party-Service Provider"].mode().iat[0]
+                    if "Opp Party-Service Provider" in g.columns and not g["Opp Party-Service Provider"].replace("", np.nan).dropna().empty else "",
+                "IMEI": imei,
+                "First_Call": first_dt.strftime("%Y-%m-%d %H:%M:%S") if pd.notna(first_dt) else "",
+                "Last_call": last_dt.strftime("%Y-%m-%d %H:%M:%S") if pd.notna(last_dt) else "",
+                "Total Event": len(g),
+                "Call In": int((g["CallTypeStd"] == "CALL_IN").sum()),
+                "Call Out": int((g["CallTypeStd"] == "CALL_OUT").sum()),
+                "SMS In": int((g["CallTypeStd"] == "SMS_IN").sum()),
+                "SMS Out": int((g["CallTypeStd"] == "SMS_OUT").sum()),
+                "Call In_Duration": int(g.loc[g["CallTypeStd"] == "CALL_IN", "DurationSeconds"].sum()),
+                "Call Out_Duration": int(g.loc[g["CallTypeStd"] == "CALL_OUT", "DurationSeconds"].sum()),
+                "Total_Duration": int(g["DurationSeconds"].sum())
             })
-            
-            return max_stay_df
-            
-        except Exception as e:
-            logging.error(f"Error creating MaxStay sheet: {e}")
-            return pd.DataFrame()
+            idx += 1
 
-    def create_roaming_analysis_sheets(self, df):
-        """Create roaming-related analysis sheets"""
-        try:
-            # OtherStateContactSummary - comprehensive circle analysis
-            sub = df.copy()
-            sub['Circle'] = sub['Circle'].astype(str)
-            sub = sub[sub['Circle'].str.strip() != ""]
-            
-            if sub.empty:
-                other_state_summary = pd.DataFrame()
-            else:
-                g = sub.groupby(['CdrNo', 'Circle'], dropna=False).agg(
-                    TotalCalls=('Circle', 'count'),
-                    OutCalls=('CallTypeStd', lambda s: (s == 'CALL_OUT').sum()),
-                    InCalls=('CallTypeStd', lambda s: (s == 'CALL_IN').sum()),
-                    OutSms=('CallTypeStd', lambda s: (s == 'SMS_OUT').sum()),
-                    InSms=('CallTypeStd', lambda s: (s == 'SMS_IN').sum()),
-                    TotalDuration=('Duration', 'sum')
-                ).reset_index()
-                
-                other_state_summary = pd.DataFrame({
-                    'CdrNo': g['CdrNo'],
-                    'Circle': g['Circle'],
-                    'Total Calls': g['TotalCalls'],
-                    'Out Calls': g['OutCalls'],
-                    'In Calls': g['InCalls'],
-                    'Out Sms': g['OutSms'],
-                    'In Sms': g['InSms'],
-                    'Other Calls': 0,
-                    'Total Duration': g['TotalDuration']
-                })
-                other_state_summary = other_state_summary[other_state_summary['Total Calls'] > 0]
-            
-            # RoamingPeriod - detailed roaming periods
-            if sub.empty:
-                roaming_periods = pd.DataFrame()
-            else:
-                g = sub.groupby(['CdrNo', 'Circle'], dropna=False).agg(
-                    TotalCalls=('Circle', 'count'),
-                    Days=('DateStr', lambda s: s.nunique()),
-                    FirstLoc=('FirstCellAddr', lambda s: s.replace("", np.nan).dropna().iloc[0] if len(s.replace("", np.nan).dropna()) > 0 else ""),
-                    LastLoc=('LastCellAddr', lambda s: s.replace("", np.nan).dropna().iloc[-1] if len(s.replace("", np.nan).dropna()) > 0 else ""),
-                    First_dt=('start_dt', 'min'),
-                    Last_dt=('start_dt', 'max'),
-                    OutCalls=('CallTypeStd', lambda s: (s == 'CALL_OUT').sum()),
-                    InCalls=('CallTypeStd', lambda s: (s == 'CALL_IN').sum()),
-                    OutSms=('CallTypeStd', lambda s: (s == 'SMS_OUT').sum()),
-                    InSms=('CallTypeStd', lambda s: (s == 'SMS_IN').sum()),
-                    TotalDuration=('Duration', 'sum')
-                ).reset_index()
-                
-                # Format period
-                def format_period(first_dt, last_dt):
-                    if pd.isna(first_dt) or pd.isna(last_dt):
-                        return ""
-                    try:
-                        start_str = pd.to_datetime(first_dt).strftime("%d/%b/%Y %H:%M:%S")
-                        end_str = pd.to_datetime(last_dt).strftime("%d/%b/%Y %H:%M:%S")
-                        return f"{start_str} to {end_str}"
-                    except Exception:
-                        return ""
-                
-                roaming_periods = pd.DataFrame({
-                    'CdrNo': g['CdrNo'],
-                    'Roaming': g['Circle'],
-                    'Period': [format_period(f, l) for f, l in zip(g['First_dt'], g['Last_dt'])],
-                    'Total Calls': g['TotalCalls'],
-                    'Days': g['Days'],
-                    'First Location': g['FirstLoc'].apply(self.clean_text),
-                    'Last Location': g['LastLoc'].apply(self.clean_text),
-                    'Out Calls': g['OutCalls'],
-                    'In Calls': g['InCalls'],
-                    'Out Sms': g['OutSms'],
-                    'In Sms': g['InSms'],
-                    'Other Calls': 0,
-                    'Total Duration': g['TotalDuration']
-                })
-            
-            return other_state_summary, roaming_periods
-            
-        except Exception as e:
-            logging.error(f"Error creating roaming analysis sheets: {e}")
-            return pd.DataFrame(), pd.DataFrame()
+        return pd.DataFrame(rows)
 
-    def create_device_analysis_sheets(self, df):
-        """Create IMEI and IMSI analysis sheets"""
-        try:
-            # Format dates and times
-            def fmt_date_dMonY(d):
-                if pd.isna(d) or d is None:
-                    return ""
-                try:
-                    return pd.to_datetime(d).strftime("%d/%b/%Y")
-                except Exception:
-                    return ""
-            
-            def fmt_time_HMS(t):
-                if pd.isna(t) or t is None:
-                    return ""
-                try:
-                    import datetime as _dt
-                    if isinstance(t, _dt.time):
-                        return t.strftime("%H:%M:%S")
-                    if isinstance(t, _dt.date) and not isinstance(t, _dt.datetime):
-                        return ""
-                    return pd.to_datetime(t).strftime("%H:%M:%S")
-                except Exception:
-                    return ""
-            
-            # IMEIPeriod - comprehensive IMEI analysis
-            imei_df = df[df['IMEI'].astype(str).str.strip() != ''].copy()
-            if len(imei_df) > 0:
-                g = imei_df.groupby(['CdrNo', 'IMEI'], dropna=False).agg(
-                    Total_Calls=('IMEI', 'count'),
-                    Days=('DateStr', lambda s: s.nunique()),
-                    First_dt=('start_dt', 'min'),
-                    Last_dt=('start_dt', 'max'),
-                    Total_Duration=('Duration', 'sum'),
-                    OutCalls=('CallTypeStd', lambda s: (s == 'CALL_OUT').sum()),
-                    InCalls=('CallTypeStd', lambda s: (s == 'CALL_IN').sum()),
-                    OutSms=('CallTypeStd', lambda s: (s == 'SMS_OUT').sum()),
-                    InSms=('CallTypeStd', lambda s: (s == 'SMS_IN').sum())
-                ).reset_index()
-                
-                # Deduplicate by keeping highest activity per IMEI
-                imei_period = g.loc[g.groupby(['CdrNo', 'IMEI'])['Total_Calls'].idxmax()].reset_index(drop=True)
-                
-                imei_period = pd.DataFrame({
-                    'CdrNo': imei_period['CdrNo'],
-                    'IMEI': imei_period['IMEI'],
-                    'Total Calls': imei_period['Total_Calls'],
-                    'Days': imei_period['Days'],
-                    'Out Calls': imei_period['OutCalls'],
-                    'In Calls': imei_period['InCalls'],
-                    'Out Sms': imei_period['OutSms'],
-                    'In Sms': imei_period['InSms'],
-                    'Other Calls': 0,
-                    'Total Duration': imei_period['Total_Duration'],
-                    'First Call Date': imei_period['First_dt'].dt.date.apply(fmt_date_dMonY),
-                    'First Call Time': imei_period['First_dt'].dt.time.apply(fmt_time_HMS),
-                    'Last Call Date': imei_period['Last_dt'].dt.date.apply(fmt_date_dMonY),
-                    'Last Call Time': imei_period['Last_dt'].dt.time.apply(fmt_time_HMS)
-                })
-            else:
-                imei_period = pd.DataFrame()
-            
-            # IMSIPeriod - comprehensive IMSI analysis
-            imsi_df = df[df['IMSI'].astype(str).str.strip() != ''].copy()
-            if len(imsi_df) > 0:
-                g = imsi_df.groupby(['CdrNo', 'IMSI'], dropna=False).agg(
-                    Total_Calls=('IMSI', 'count'),
-                    Days=('DateStr', lambda s: s.nunique()),
-                    First_dt=('start_dt', 'min'),
-                    Last_dt=('start_dt', 'max'),
-                    Total_Duration=('Duration', 'sum'),
-                    OutCalls=('CallTypeStd', lambda s: (s == 'CALL_OUT').sum()),
-                    InCalls=('CallTypeStd', lambda s: (s == 'CALL_IN').sum()),
-                    OutSms=('CallTypeStd', lambda s: (s == 'SMS_OUT').sum()),
-                    InSms=('CallTypeStd', lambda s: (s == 'SMS_IN').sum())
-                ).reset_index()
-                
-                # Deduplicate by keeping highest activity per IMSI  
-                imsi_period = g.loc[g.groupby(['CdrNo', 'IMSI'])['Total_Calls'].idxmax()].reset_index(drop=True)
-                
-                imsi_period = pd.DataFrame({
-                    'CdrNo': imsi_period['CdrNo'],
-                    'IMSI': imsi_period['IMSI'],
-                    'Total Calls': imsi_period['Total_Calls'],
-                    'Days': imsi_period['Days'],
-                    'Out Calls': imsi_period['OutCalls'],
-                    'In Calls': imsi_period['InCalls'],
-                    'Out Sms': imsi_period['OutSms'],
-                    'In Sms': imsi_period['InSms'],
-                    'Other Calls': 0,
-                    'Total Duration': imsi_period['Total_Duration'],
-                    'First Call Date': imsi_period['First_dt'].dt.date.apply(fmt_date_dMonY),
-                    'First Call Time': imsi_period['First_dt'].dt.time.apply(fmt_time_HMS),
-                    'Last Call Date': imsi_period['Last_dt'].dt.date.apply(fmt_date_dMonY),
-                    'Last Call Time': imsi_period['Last_dt'].dt.time.apply(fmt_time_HMS)
-                })
-            else:
-                imsi_period = pd.DataFrame()
-            
-            return imei_period, imsi_period
-            
-        except Exception as e:
-            logging.error(f"Error creating device analysis sheets: {e}")
-            return pd.DataFrame(), pd.DataFrame()
+    def create__06_State_Connection(self, df):
+        if df is None or df.empty:
+            return pd.DataFrame(columns=[
+                "Id", "CDR Party No", "Connection of State", "Total Event",
+                "Call In", "Call Out", "SMS In", "SMS Out",
+                "Call In_Duration", "Call Out_Duration", "Total_Duration"
+            ])
 
-    def create_night_day_analysis(self, df):
-        """Create night/day analysis sheets with comprehensive columns"""
-        try:
-            logging.info(f"Starting night/day analysis with {len(df)} total records")
-            
-            # Ensure we have time data to work with
-            if 'Hour' not in df.columns and 'start_dt' in df.columns:
-                df['Hour'] = pd.to_datetime(df['start_dt'], errors='coerce').dt.hour
-                logging.info("Generated Hour column from start_dt")
-            
-            # Create or fix IsNight column
-            if 'Hour' in df.columns:
-                df['IsNight'] = df['Hour'].apply(lambda h: (h >= 18 or h < 6) if pd.notna(h) else False)
-                night_count = df['IsNight'].sum()
-                day_count = len(df) - night_count
-                logging.info(f"Night time records (18:00-06:00): {night_count}")
-                logging.info(f"Day time records (06:00-18:00): {day_count}")
-                
-                # Show sample of hour distribution
-                if 'Hour' in df.columns:
-                    hour_dist = df['Hour'].value_counts().sort_index().head(24)
-                    logging.info(f"Hour distribution sample: {dict(hour_dist)}")
-                
-                night_df = df[df['IsNight'] == True].copy()
-                day_df = df[df['IsNight'] == False].copy()
-                
-                logging.info(f"Night records after filtering: {len(night_df)}")
-                logging.info(f"Day records after filtering: {len(day_df)}")
-            else:
-                logging.warning("No time data available for night/day analysis")
-                # Return empty dataframes if no time data
-                return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
-            
-            # Helper function to create mapping format
-            def create_mapping_format(data_df):
-                if len(data_df) == 0:
-                    return pd.DataFrame()
-                    
-                n = len(data_df)
-                empty_series = lambda val="": pd.Series([val]*n)
-                
-                return pd.DataFrame({
-                    'CdrNo': data_df['CdrNo'].fillna('').astype(str),
-                    'B Party': data_df['Counterparty'].apply(self.clean_text),
-                    'Date': data_df['DateStr'].fillna('').astype(str),
-                    'Time': data_df['TimeStr'].fillna('').astype(str),
-                    'Duration': data_df['Duration'].fillna(0).astype('Int64'),
-                    'Call Type': data_df['CallTypeStd'].fillna('').astype(str),
-                    'First Cell ID': data_df['FirstCellID'].apply(self.clean_text),
-                    'First Cell ID Address': data_df['FirstCellAddr'].apply(self.clean_text),
-                    'Last Cell ID': data_df['LastCellID'].apply(self.clean_text),
-                    'Last Cell ID Address': data_df['LastCellAddr'].apply(self.clean_text),
-                    'IMEI': data_df['IMEI'].apply(self.clean_text),
-                    'IMEI Manufacturer': empty_series(""),
-                    'Device Type': empty_series(""),
-                    'IMSI': data_df['IMSI'].apply(self.clean_text),
-                    'Roaming': data_df['Circle'].fillna("").astype(str),
-                    'B Party Provider': empty_series(""),
-                    'Main City(First CellID)': data_df['FirstCellCity'].apply(self.clean_text),
-                    'Sub City(First CellID)': empty_series(""),
-                    'Lat-Long-Azimuth (First CellID)': empty_series(""),
-                    'Crime': empty_series(""),
-                    'Circle': data_df['Circle'].fillna("").astype(str),
-                    'Operator': data_df['operator'].fillna("").astype(str),
-                    'CallForward': data_df.get('CallForward', empty_series()).apply(self.clean_text),
-                    'LRN': data_df.get('LRN', empty_series()).apply(self.clean_text),
-                    'Location': empty_series("")
-                })
-            
-            # Helper function to create MaxStay format
-            def create_maxstay_format(data_df):
-                if len(data_df) == 0:
-                    return pd.DataFrame()
-                    
-                sub = data_df[data_df['FirstCellID'].astype(str).str.strip() != ""].copy()
-                if sub.empty:
-                    return pd.DataFrame()
-                
-                g = sub.groupby(['CdrNo', 'FirstCellID'], dropna=False).agg(
-                    Total_Calls=('FirstCellID', 'count'),
-                    Days=('DateStr', lambda s: s.nunique()),
-                    TowerAddress=('FirstCellAddr', lambda s: s.replace("", np.nan).dropna().iloc[0] if len(s.replace("", np.nan).dropna()) > 0 else ""),
-                    First_dt=('start_dt', 'min'),
-                    Last_dt=('start_dt', 'max'),
-                    Roaming=('Circle', lambda s: s.replace("", np.nan).dropna().iloc[0] if len(s.replace("", np.nan).dropna()) > 0 else "")
-                ).reset_index()
-                
-                def fmt_date_dMonY(d):
-                    if pd.isna(d) or d is None:
-                        return ""
-                    try:
-                        return pd.to_datetime(d).strftime("%d/%b/%Y")
-                    except Exception:
-                        return ""
-                
-                def fmt_time_HMS(t):
-                    if pd.isna(t) or t is None:
-                        return ""
-                    try:
-                        import datetime as _dt
-                        if isinstance(t, _dt.time):
-                            return t.strftime("%H:%M:%S")
-                        if isinstance(t, _dt.date) and not isinstance(t, _dt.datetime):
-                            return ""
-                        return pd.to_datetime(t).strftime("%H:%M:%S")
-                    except Exception:
-                        return ""
-                
-                return pd.DataFrame({
-                    'CdrNo': g['CdrNo'],
-                    'Cell ID': g['FirstCellID'],
-                    'Total Calls': g['Total_Calls'],
-                    'Days': g['Days'],
-                    'Tower Address': g['TowerAddress'].apply(self.clean_text),
-                    'Latitude': "",
-                    'Longitude': "",
-                    'Azimuth': "",
-                    'Roaming': g['Roaming'],
-                    'First Call Date': g['First_dt'].dt.date.apply(fmt_date_dMonY),
-                    'First Call Time': g['First_dt'].dt.time.apply(fmt_time_HMS),
-                    'Last Call Date': g['Last_dt'].dt.date.apply(fmt_date_dMonY),
-                    'Last Call Time': g['Last_dt'].dt.time.apply(fmt_time_HMS)
-                })
-            
-            # Create all four sheets
-            night_mapping = create_mapping_format(night_df)
-            night_stay = create_maxstay_format(night_df)
-            day_mapping = create_mapping_format(day_df)
-            day_stay = create_maxstay_format(day_df)
-            
-            return night_mapping, night_stay, day_mapping, day_stay
-            
-        except Exception as e:
-            logging.error(f"Error creating night/day analysis: {e}")
-            return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+        df["ConnectionState"] = (
+            df["Home Circle"].fillna("")
+            .replace("", np.nan)
+            .fillna(df["ROAM_CIRCLE"].fillna(""))
+        )
+        grp = df.groupby(["CDR Party No", "ConnectionState"], dropna=False)
 
-    def create_location_analysis_sheets(self, df):
-        """Create comprehensive location-based analysis sheets"""
-        try:
-            # WorkHomeLocation - comprehensive location analysis
-            if len(df) > 0 and 'FirstCellCity' in df.columns:
-                sub = df[df['FirstCellCity'].astype(str).str.strip() != ""].copy()
-                if not sub.empty:
-                    g = sub.groupby(['CdrNo', 'FirstCellCity'], dropna=False).agg(
-                        Total_Calls=('FirstCellCity', 'count'),
-                        Days=('DateStr', lambda s: s.nunique()),
-                        Out_Calls=('CallTypeStd', lambda s: (s == 'CALL_OUT').sum()),
-                        In_Calls=('CallTypeStd', lambda s: (s == 'CALL_IN').sum()),
-                        Out_Sms=('CallTypeStd', lambda s: (s == 'SMS_OUT').sum()),
-                        In_Sms=('CallTypeStd', lambda s: (s == 'SMS_IN').sum()),
-                        Total_Duration=('Duration', 'sum'),
-                        First_dt=('start_dt', 'min'),
-                        Last_dt=('start_dt', 'max'),
-                        Tower_Address=('FirstCellAddr', lambda s: s.replace("", np.nan).dropna().iloc[0] if len(s.replace("", np.nan).dropna()) > 0 else "")
-                    ).reset_index()
-                    
-                    def fmt_date_dMonY(d):
-                        if pd.isna(d) or d is None:
-                            return ""
-                        try:
-                            return pd.to_datetime(d).strftime("%d/%b/%Y")
-                        except Exception:
-                            return ""
-                    
-                    def fmt_time_HMS(t):
-                        if pd.isna(t) or t is None:
-                            return ""
-                        try:
-                            import datetime as _dt
-                            if isinstance(t, _dt.time):
-                                return t.strftime("%H:%M:%S")
-                            if isinstance(t, _dt.date) and not isinstance(t, _dt.datetime):
-                                return ""
-                            return pd.to_datetime(t).strftime("%H:%M:%S")
-                        except Exception:
-                            return ""
-                    
-                    work_home_locations = pd.DataFrame({
-                        'CdrNo': g['CdrNo'],
-                        'Cell ID': g['FirstCellCity'],
-                        'Total Calls': g['Total_Calls'],
-                        'Days': g['Days'],
-                        'Out Calls': g['Out_Calls'],
-                        'In Calls': g['In_Calls'],
-                        'Out Sms': g['Out_Sms'],
-                        'In Sms': g['In_Sms'],
-                        'Other Calls': 0,
-                        'Total Duration': g['Total_Duration'],
-                        'Tower Address': g['Tower_Address'].apply(self.clean_text),
-                        'Latitude': "",
-                        'Longitude': "",
-                        'Azimuth': "",
-                        'First Call Date': g['First_dt'].dt.date.apply(fmt_date_dMonY),
-                        'First Call Time': g['First_dt'].dt.time.apply(fmt_time_HMS),
-                        'Last Call Date': g['Last_dt'].dt.date.apply(fmt_date_dMonY),
-                        'Last Call Time': g['Last_dt'].dt.time.apply(fmt_time_HMS)
+        rows = []
+        idx = 1
+
+        for (cdr, state), g in grp:
+            if str(state).strip() == "":
+                continue
+
+            rows.append({
+                "Id": idx,
+                "CDR Party No": cdr,
+                "Connection of State": state,
+                "Total Event": len(g),
+                "Call In": int((g["CallTypeStd"] == "CALL_IN").sum()),
+                "Call Out": int((g["CallTypeStd"] == "CALL_OUT").sum()),
+                "SMS In": int((g["CallTypeStd"] == "SMS_IN").sum()),
+                "SMS Out": int((g["CallTypeStd"] == "SMS_OUT").sum()),
+                "Call In_Duration": int(g.loc[g["CallTypeStd"] == "CALL_IN", "DurationSeconds"].sum()),
+                "Call Out_Duration": int(g.loc[g["CallTypeStd"] == "CALL_OUT", "DurationSeconds"].sum()),
+                "Total_Duration": int(g["DurationSeconds"].sum())
+            })
+            idx += 1
+
+        return pd.DataFrame(rows)
+
+    def create__07_ISD_Call(self, df):
+        if df is None or df.empty:
+            return pd.DataFrame(columns=[
+                "CdrNo", "B Party", "Date", "Time", "Duration", "Call Type",
+                "First Cell ID", "First Cell ID Address", "Last Cell ID",
+                "Last Cell ID Address", "IMEI", "IMSI", "Roaming", "Operator"
+            ])
+
+        def is_international(number):
+            if pd.isna(number) or str(number).strip() == "":
+                return False
+            s = str(number).strip()
+            num_clean = re.sub(r"\D", "", s)
+            return s.startswith("+") or s.startswith("00") or (len(num_clean) > 12)
+
+        calls = df[df["CallTypeStd"].str.startswith("CALL")].copy()
+        calls["IsISD"] = calls["Opposite Party No"].apply(is_international)
+        isd = calls[calls["IsISD"]]
+
+        if isd.empty:
+            return pd.DataFrame(columns=[
+                "CdrNo", "B Party", "Date", "Time", "Duration", "Call Type",
+                "First Cell ID", "First Cell ID Address", "Last Cell ID",
+                "Last Cell ID Address", "IMEI", "IMSI", "Roaming", "Operator"
+            ])
+
+        out = isd[[
+            "CDR Party No", "Opposite Party No", "CALL_DATE", "CALL_TIME",
+            "CALL_DURATION", "FIRST_CELL_ID_A", "First_Cell_Site_Address",
+            "LAST_CELL_ID_A", "Last_Cell_Site_Address", "ESN_IMEI_A", "IMSI_A",
+            "ROAM_CIRCLE", "Opp Party-Service Provider"
+        ]].copy()
+
+        out = out.rename(columns={
+            "Opposite Party No": "B Party",
+            "CALL_DATE": "Date",
+            "CALL_TIME": "Time",
+            "CALL_DURATION": "Duration",
+            "FIRST_CELL_ID_A": "First Cell ID",
+            "First_Cell_Site_Address": "First Cell ID Address",
+            "LAST_CELL_ID_A": "Last Cell ID",
+            "Last_Cell_Site_Address": "Last Cell ID Address",
+            "ESN_IMEI_A": "IMEI",
+            "IMSI_A": "IMSI",
+            "ROAM_CIRCLE": "Roaming",
+            "Opp Party-Service Provider": "Operator"
+        })
+
+        out.insert(0, "CdrNo", out.pop("CDR Party No"))
+        out["Call Type"] = isd["CallTypeStd"].values
+
+        return out.reset_index(drop=True)
+
+    def create__08_Night_Call(self, df):
+        if df is None or df.empty:
+            return pd.DataFrame(columns=[
+                "Id", "CDR Party No", "Opposite Party No", "Opp Party-Name",
+                "Opp Party-Full Address", "Opp Party-SP State", "Total Event",
+                "Call In", "Call Out", "SMS In", "SMS Out",
+                "Call In_Duration", "Call Out_Duration", "Total_Duration"
+            ])
+
+        night = df[df["IsNight"] == True].copy()
+        grp = night.groupby(["CDR Party No", "Opposite Party No"], dropna=False)
+
+        rows = []
+        idx = 1
+
+        for (cdr, opp), g in grp:
+            if str(opp).strip() == "":
+                continue
+
+            rows.append({
+                "Id": idx,
+                "CDR Party No": cdr,
+                "Opposite Party No": opp,
+                "Opp Party-Name": g["Opp Party-Name"].iloc[0]
+                    if "Opp Party-Name" in g.columns else str(opp),
+                "Opp Party-Full Address": "",
+                "Opp Party-SP State": g["ROAM_CIRCLE"].mode().iat[0]
+                    if not g["ROAM_CIRCLE"].replace("", np.nan).dropna().empty else "",
+                "Total Event": len(g),
+                "Call In": int((g["CallTypeStd"] == "CALL_IN").sum()),
+                "Call Out": int((g["CallTypeStd"] == "CALL_OUT").sum()),
+                "SMS In": int((g["CallTypeStd"] == "SMS_IN").sum()),
+                "SMS Out": int((g["CallTypeStd"] == "SMS_OUT").sum()),
+                "Call In_Duration": int(g.loc[g["CallTypeStd"] == "CALL_IN", "DurationSeconds"].sum()),
+                "Call Out_Duration": int(g.loc[g["CallTypeStd"] == "CALL_OUT", "DurationSeconds"].sum()),
+                "Total_Duration": int(g["DurationSeconds"].sum())
+            })
+            idx += 1
+
+        return pd.DataFrame(rows)
+
+    def create__09_Mobile_SwitchOFF(self, df):
+        if df is None or df.empty:
+            return pd.DataFrame(columns=["ID", "Start_Date", "End_Date", "Total_Day"])
+
+        df["date_only"] = pd.to_datetime(df["CALL_DATE"], errors="coerce").dt.date
+        grp = df.groupby(["CDR Party No"], dropna=False)
+        rows = []
+        idx = 1
+
+        for cdr, g in grp:
+            # Only use valid dates
+            dates = [d for d in g["date_only"] if isinstance(d, date) and pd.notna(d)]
+            if not dates:
+                continue
+
+            dates = sorted(set(dates))
+            for i in range(len(dates) - 1):
+                gap = (dates[i + 1] - dates[i]).days
+                if gap > 1:
+                    rows.append({
+                        "ID": idx,
+                        "Start_Date": dates[i].strftime("%Y-%m-%d")
+                            if (dates[i] and pd.notna(dates[i]) and isinstance(dates[i], date)) else "",
+                        "End_Date": dates[i + 1].strftime("%Y-%m-%d")
+                            if (dates[i + 1] and pd.notna(dates[i + 1]) and isinstance(dates[i + 1], date)) else "",
+                        "Total_Day": gap
                     })
-                else:
-                    work_home_locations = pd.DataFrame()
-            else:
-                work_home_locations = pd.DataFrame()
-            
-            # HomeLocationBasedonDayFirstand - day-time location analysis
-            day_df = df[df['IsNight'] == False].copy()
-            if len(day_df) > 0 and 'FirstCellCity' in day_df.columns:
-                sub = day_df[day_df['FirstCellCity'].astype(str).str.strip() != ""].copy()
-                if not sub.empty:
-                    # Get first and last records for each location
-                    location_groups = []
-                    for location, group in sub.groupby('FirstCellCity'):
-                        first_record = group.loc[group['start_dt'].idxmin()] if 'start_dt' in group.columns else group.iloc[0]
-                        last_record = group.loc[group['start_dt'].idxmax()] if 'start_dt' in group.columns else group.iloc[-1]
-                        
-                        location_groups.append({
-                            'CdrNo': first_record.get('CdrNo', ''),
-                            'Cell ID': location,
-                            'Total Calls': len(group),
-                            'Days': group['DateStr'].nunique() if 'DateStr' in group.columns else 1,
-                            'First Record': f"{first_record.get('DateStr', '')} {first_record.get('TimeStr', '')}".strip(),
-                            'Last Record': f"{last_record.get('DateStr', '')} {last_record.get('TimeStr', '')}".strip(),
-                            'Tower Address': first_record.get('FirstCellAddr', ''),
-                            'Latitude': "",
-                            'Longitude': "",
-                            'Azimuth': ""
-                        })
-                    
-                    home_locations = pd.DataFrame(location_groups)
-                    home_locations['Tower Address'] = home_locations['Tower Address'].apply(self.clean_text)
-                else:
-                    home_locations = pd.DataFrame()
-            else:
-                home_locations = pd.DataFrame()
-            
-            return work_home_locations, home_locations
-            
-        except Exception as e:
-            logging.error(f"Error creating location analysis sheets: {e}")
-            return pd.DataFrame(), pd.DataFrame()
+                    idx += 1
 
-    def create_isd_calls_sheet(self, df):
-        """Create ISDCalls sheet - comprehensive international calls analysis"""
-        try:
-            # Identify ISD calls (international calls) - CONSERVATIVE logic to avoid false positives
-            def is_international(number):
-                if pd.isna(number) or str(number).strip() == '':
-                    return False
-                num_str = str(number).strip()
-                
-                # Remove common prefixes and clean
-                num_clean = num_str.replace('+', '').replace('-', '').replace(' ', '').replace('(', '').replace(')', '')
-                
-                # CONSERVATIVE International patterns - avoid false positives:
-                # 1. Explicitly starts with 00 (international prefix)
-                # 2. Explicitly starts with + 
-                # 3. Starts with specific country codes that are unambiguous
-                
-                is_intl = (
-                    # Clear international indicators
-                    num_str.startswith('00') or 
-                    num_str.startswith('+') or
-                    # US/Canada numbers (1 followed by 10 digits)
-                    (num_clean.startswith('1') and len(num_clean) == 11 and num_clean[1:2] in ['2','3','4','5','6','7','8','9']) or
-                    # Common international country codes (but be specific)
-                    (num_clean.startswith('44') and len(num_clean) >= 12) or  # UK
-                    (num_clean.startswith('86') and len(num_clean) >= 12) or  # China
-                    (num_clean.startswith('33') and len(num_clean) >= 11) or  # France
-                    (num_clean.startswith('49') and len(num_clean) >= 12) or  # Germany
-                    (num_clean.startswith('81') and len(num_clean) >= 11) or  # Japan
-                    (num_clean.startswith('971') and len(num_clean) >= 11) or  # UAE
-                    (num_clean.startswith('966') and len(num_clean) >= 11) or  # Saudi Arabia
-                    (num_clean.startswith('974') and len(num_clean) >= 10) or  # Qatar
-                    # Very clearly international (very long numbers)
-                    (len(num_clean) > 13 and num_clean.isdigit())
-                )
-                
-                return is_intl
-            
-            logging.info(f"Analyzing {len(df)} total records for ISD calls")
-            
-            # Filter for calls only
-            calls_df = df[df['CallTypeStd'].str.startswith('CALL')].copy()
-            logging.info(f"Found {len(calls_df)} call records for ISD analysis")
-            
-            if len(calls_df) > 0:
-                calls_df['IsISD'] = calls_df['Counterparty'].apply(is_international)
-                isd_count = calls_df['IsISD'].sum()
-                logging.info(f"Identified {isd_count} ISD calls")
-                
-                # Sample some numbers for debugging
-                sample_numbers = calls_df['Counterparty'].head(10).tolist()
-                logging.info(f"Sample counterparty numbers: {sample_numbers}")
-                
-                isd_calls = calls_df[calls_df['IsISD'] == True].copy()
-                
-                # Log sample of what we're analyzing for debugging
-                if len(isd_calls) == 0:
-                    sample_nums = calls_df['Counterparty'].head(20).tolist()
-                    logging.info(f"No ISD calls found. Sample numbers analyzed: {sample_nums[:10]}")
-                    # Don't use lenient approach to avoid false positives
-                    logging.info("Using conservative ISD detection to avoid false positives")
-                
-                if len(isd_calls) > 0:
-                    # Remove any rows with empty/null counterparty to avoid blank rows
-                    isd_calls = isd_calls[isd_calls['Counterparty'].astype(str).str.strip() != ''].copy()
-                    
-                    if len(isd_calls) > 0:
-                        n = len(isd_calls)
-                        empty_series = lambda val="": pd.Series([val]*n)
-                        
-                        logging.info(f"Creating ISD sheet with {n} valid international calls")
-                    
-                        isd_result = pd.DataFrame({
-                            'CdrNo': isd_calls['CdrNo'].fillna('').astype(str),
-                            'B Party': isd_calls['Counterparty'].apply(self.clean_text),
-                            'Date': isd_calls['DateStr'].fillna('').astype(str),
-                            'Time': isd_calls['TimeStr'].fillna('').astype(str),
-                            'Duration': isd_calls['Duration'].fillna(0).astype('Int64'),
-                            'Call Type': isd_calls['CallTypeStd'].fillna('').astype(str),
-                            'First Cell ID': isd_calls['FirstCellID'].apply(self.clean_text),
-                            'First Cell ID Address': isd_calls['FirstCellAddr'].apply(self.clean_text),
-                            'Last Cell ID': isd_calls['LastCellID'].apply(self.clean_text),
-                            'Last Cell ID Address': isd_calls['LastCellAddr'].apply(self.clean_text),
-                            'IMEI': isd_calls['IMEI'].apply(self.clean_text),
-                            'IMEI Manufacturer': empty_series(""),
-                            'Device Type': empty_series(""),
-                            'IMSI': isd_calls['IMSI'].apply(self.clean_text),
-                            'Roaming': isd_calls['Circle'].fillna("").astype(str),
-                            'B Party Provider': empty_series(""),
-                            'Main City(First CellID)': isd_calls['FirstCellCity'].apply(self.clean_text),
-                            'Sub City(First CellID)': empty_series(""),
-                            'Lat-Long-Azimuth (First CellID)': empty_series(""),
-                            'Crime': empty_series(""),
-                            'Circle': isd_calls['Circle'].fillna("").astype(str),
-                            'Operator': isd_calls['operator'].fillna("").astype(str),
-                            'CallForward': isd_calls.get('CallForward', empty_series()).apply(self.clean_text),
-                            'LRN': isd_calls.get('LRN', empty_series()).apply(self.clean_text),
-                            'Location': empty_series("")
-                        })
-                    else:
-                        logging.info("No valid ISD calls after filtering blank entries")
-                        isd_result = pd.DataFrame()
-                else:
-                    logging.info("No ISD calls found")
-                    isd_result = pd.DataFrame()
-            else:
-                logging.info("No call records found for ISD analysis")
-                isd_result = pd.DataFrame()
-            
-            return isd_result
-            
-        except Exception as e:
-            logging.error(f"Error creating ISDCalls sheet: {e}")
-            return pd.DataFrame()
-    
-    def _add_conditional_formatting(self, worksheet, df, sheet_name, colors):
-        """Add conditional formatting and data visualization"""
-        try:
-            if len(df) == 0:
-                return
-            
-            max_row = len(df) + 1
-            
-            # Duration-based formatting (for sheets with Duration column)
-            duration_cols = [col for col in df.columns if 'Duration' in str(col)]
-            for col_name in duration_cols[:1]:  # Limit to first duration column
-                col_num = df.columns.get_loc(col_name) + 1
-                duration_col = get_column_letter(col_num)
-                
-                # Add data bars for duration
-                try:
-                    data_bar_rule = DataBarRule(
-                        start_type='num', start_value=0,
-                        end_type='max', end_value=None,
-                        color=colors['header'][2:],  # Remove FF prefix
-                        showValue=True
-                    )
-                    worksheet.conditional_formatting.add(
-                        f'{duration_col}2:{duration_col}{max_row}',
-                        data_bar_rule
-                    )
-                except Exception:
-                    pass  # Skip if data bar fails
-            
-            # Call count-based formatting
-            call_count_cols = [col for col in df.columns if any(x in str(col).lower() for x in ['total calls', 'calls', 'count']) and 'duration' not in str(col).lower()]
-            for col_name in call_count_cols[:2]:  # Limit to first 2 call count columns
-                col_num = df.columns.get_loc(col_name) + 1
-                col_letter = get_column_letter(col_num)
-                
-                # Color scale for call counts
-                try:
-                    color_scale = ColorScaleRule(
-                        start_type='min', start_color='FFFFFF',
-                        mid_type='percentile', mid_value=50, mid_color=colors['accent'][2:],
-                        end_type='max', end_color=colors['header'][2:]
-                    )
-                    worksheet.conditional_formatting.add(
-                        f'{col_letter}2:{col_letter}{max_row}',
-                        color_scale
-                    )
-                except Exception:
-                    pass  # Skip if color scale fails
-            
-            # Special formatting for specific sheet types
-            if sheet_name == 'Summary':
-                self._format_summary_sheet(worksheet, df)
-            elif 'MaxCalls' in sheet_name or 'MaxDuration' in sheet_name:
-                self._format_max_sheets(worksheet, df)
-            elif 'ISD' in sheet_name:
-                self._format_isd_sheet(worksheet, df)
-                
-        except Exception as e:
-            logging.warning(f"Error adding conditional formatting: {e}")
-    
-    def _format_summary_sheet(self, worksheet, df):
-        """Special formatting for Summary sheet"""
-        try:
-            max_row = len(df) + 1
-            
-            # Highlight high-activity contacts
-            if 'Total Calls' in df.columns:
-                total_calls_col = get_column_letter(df.columns.get_loc('Total Calls') + 1)
-                
-                # Highlight top performers
-                try:
-                    high_activity_rule = CellIsRule(
-                        operator='greaterThan',
-                        formula=['50'],
-                        fill=PatternFill(start_color='FFD4EDDA', end_color='FFD4EDDA', fill_type='solid')
-                    )
-                    worksheet.conditional_formatting.add(f'{total_calls_col}2:{total_calls_col}{max_row}', high_activity_rule)
-                except Exception:
-                    pass
-                
-        except Exception as e:
-            logging.warning(f"Error formatting summary sheet: {e}")
-    
-    def _format_max_sheets(self, worksheet, df):
-        """Special formatting for MaxCalls/MaxDuration sheets"""
-        try:
-            max_row = len(df) + 1
-            
-            # Gradient formatting for ranking visualization
-            if len(df) > 0 and len(df.columns) >= 3:
-                first_data_col = get_column_letter(3)  # Usually the metric column
-                try:
-                    color_scale = ColorScaleRule(
-                        start_type='max', start_color='FF28A745',
-                        mid_type='percentile', mid_value=50, mid_color='FFFFC107',
-                        end_type='min', end_color='FFDC3545'
-                    )
-                    worksheet.conditional_formatting.add(f'{first_data_col}2:{first_data_col}{max_row}', color_scale)
-                except Exception:
-                    pass
-                
-        except Exception as e:
-            logging.warning(f"Error formatting max sheets: {e}")
-    
-    def _format_isd_sheet(self, worksheet, df):
-        """Special formatting for ISD calls sheet"""
-        try:
-            max_row = len(df) + 1
-            
-            # Highlight international indicators
-            if 'B Party' in df.columns:
-                b_party_col = get_column_letter(df.columns.get_loc('B Party') + 1)
-                
-                # Highlight entries starting with + or 00
-                try:
-                    intl_rule = CellIsRule(
-                        operator='beginsWith',
-                        formula=['00'],
-                        fill=PatternFill(start_color='FFFFEAA7', end_color='FFFFEAA7', fill_type='solid')
-                    )
-                    worksheet.conditional_formatting.add(f'{b_party_col}2:{b_party_col}{max_row}', intl_rule)
-                except Exception:
-                    pass
-                
-        except Exception as e:
-            logging.warning(f"Error formatting ISD sheet: {e}")
+        return pd.DataFrame(rows)
 
+    # -------------------------
+    # Main generate function
+    # -------------------------
+    def generate_excel(self, df, output_path):
+        try:
+            self.update_progress(40, "Generating Excel...")
+
+            sheet_defs = [
+                ("_01_CDR_Format", self.create__01_CDR_Format,
+                 ["CDR Party No", "Opposite Party No", "CALL_DATE", "CALL_TIME", "CALL_DURATION"]),
+                ("_02_Relationship_Call_Frequ", self.create__02_Relationship_Call_Frequ,
+                 ["CDR Party No", "Opposite Party No", "Start_Date", "End_Date", "Total Event"]),
+                ("_03_Cell_ID_Frequency", self.create__03_Cell_ID_Frequency,
+                 ["CDR Party No", "FIRST_CELL_ID_A", "Total Event"]),
+                ("_04_Movement_Analysis", self.create__04_Movement_Analysis,
+                 ["CDR Party No", "Opposite Party No", "CALL_DATE", "FIRST_CELL_ID_A"]),
+                ("_05_Imei_Used", self.create__05_Imei_Used,
+                 ["CDR Party No", "IMEI", "First_Call", "Last_call", "Total Event"]),
+                ("_06_State_Connection", self.create__06_State_Connection,
+                 ["CDR Party No", "Connection of State", "Total Event"]),
+                ("_07_ISD_Call", self.create__07_ISD_Call,
+                 ["CdrNo", "B Party", "Date", "Duration"]),
+                ("_08_Night_Call", self.create__08_Night_Call,
+                 ["CDR Party No", "Opposite Party No", "Total Event"]),
+                ("_09_Mobile_SwitchOFF", self.create__09_Mobile_SwitchOFF,
+                 ["Start_Date", "End_Date", "Total_Day"])
+            ]
+
+            with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
+                for sheet_name, creator, imp_cols in sheet_defs:
+                    if self.cancel_flag:
+                        raise Exception("Cancelled")
+                    self.update_progress(50, f"Generating {sheet_name}")
+                    sheet_df = creator(df)
+                    sheet_df = self.drop_empty_rows(sheet_df)
+                    sheet_df.to_excel(writer, sheet_name=sheet_name, index=False)
+
+            # styling pass
+            wb = load_workbook(output_path)
+            for idx, (sheet_name, _, imp_cols) in enumerate(sheet_defs):
+                self.autofit_and_style(wb, sheet_name, imp_cols, sheet_index=idx)
+            wb.save(output_path)
+
+            self.update_progress(100, f"Excel generated: {output_path}")
+            return output_path
+
+        except Exception as e:
+            logging.error(f"Error generating Excel: {e}")
+            raise
+
+    # -------------------------
+    # Backward compatibility
+    # -------------------------
     def generate_excel_file(self, df, output_path):
-        """Generate complete Excel file with all 16 sheets"""
-        try:
-            self.update_progress(5, "Initializing Excel generation...")
-            
-            if self.cancel_flag:
-                raise Exception("Processing cancelled by user")
-                
-            with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
-                
-                # 1. Mapping sheet
-                self.update_progress(10, "Creating Mapping sheet...")
-                mapping_df = self.create_mapping_sheet(df)
-                mapping_df.to_excel(writer, sheet_name='Mapping', index=False)
-                self.format_excel_sheet(writer, 'Mapping', mapping_df)
-                
-                # 2. Summary sheet
-                self.update_progress(15, "Creating Summary sheet...")
-                summary_df = self.create_summary_sheet(df)
-                summary_df.to_excel(writer, sheet_name='Summary', index=False)
-                self.format_excel_sheet(writer, 'Summary', summary_df)
-                
-                # 3. MaxCalls sheet
-                self.update_progress(20, "Creating MaxCalls sheet...")
-                max_calls_df = self.create_max_calls_sheet(df)
-                max_calls_df.to_excel(writer, sheet_name='MaxCalls', index=False)
-                self.format_excel_sheet(writer, 'MaxCalls', max_calls_df)
-                
-                # 4. MaxDuration sheet
-                self.update_progress(25, "Creating MaxDuration sheet...")
-                max_duration_df = self.create_max_duration_sheet(df)
-                max_duration_df.to_excel(writer, sheet_name='MaxDuration', index=False)
-                self.format_excel_sheet(writer, 'MaxDuration', max_duration_df)
-                
-                # 5. MaxStay sheet
-                self.update_progress(30, "Creating MaxStay sheet...")
-                max_stay_df = self.create_max_stay_sheet(df)
-                max_stay_df.to_excel(writer, sheet_name='MaxStay', index=False)
-                self.format_excel_sheet(writer, 'MaxStay', max_stay_df)
-                
-                # 6-7. Roaming analysis sheets
-                self.update_progress(35, "Creating roaming analysis sheets...")
-                other_state_df, roaming_period_df = self.create_roaming_analysis_sheets(df)
-                other_state_df.to_excel(writer, sheet_name='OtherStateContactSummary', index=False)
-                self.format_excel_sheet(writer, 'OtherStateContactSummary', other_state_df)
-                roaming_period_df.to_excel(writer, sheet_name='RoamingPeriod', index=False)
-                self.format_excel_sheet(writer, 'RoamingPeriod', roaming_period_df)
-                
-                # 8-9. Device analysis sheets
-                self.update_progress(45, "Creating device analysis sheets...")
-                imei_period_df, imsi_period_df = self.create_device_analysis_sheets(df)
-                imei_period_df.to_excel(writer, sheet_name='IMEIPeriod', index=False)
-                self.format_excel_sheet(writer, 'IMEIPeriod', imei_period_df)
-                imsi_period_df.to_excel(writer, sheet_name='IMSIPeriod', index=False)
-                self.format_excel_sheet(writer, 'IMSIPeriod', imsi_period_df)
-                
-                # 10-13. Night/Day analysis sheets
-                self.update_progress(60, "Creating night/day analysis sheets...")
-                night_mapping_df, night_stay_df, day_mapping_df, day_stay_df = self.create_night_day_analysis(df)
-                night_mapping_df.to_excel(writer, sheet_name='Night_Mapping', index=False)
-                self.format_excel_sheet(writer, 'Night_Mapping', night_mapping_df)
-                night_stay_df.to_excel(writer, sheet_name='Night_MaxStay', index=False)
-                self.format_excel_sheet(writer, 'Night_MaxStay', night_stay_df)
-                day_mapping_df.to_excel(writer, sheet_name='Day_Mapping', index=False)
-                self.format_excel_sheet(writer, 'Day_Mapping', day_mapping_df)
-                day_stay_df.to_excel(writer, sheet_name='Day_MaxStay', index=False)
-                self.format_excel_sheet(writer, 'Day_MaxStay', day_stay_df)
-                
-                # 14-15. Location analysis sheets
-                self.update_progress(80, "Creating location analysis sheets...")
-                work_home_df, home_location_df = self.create_location_analysis_sheets(df)
-                work_home_df.to_excel(writer, sheet_name='WorkHomeLocation', index=False)
-                self.format_excel_sheet(writer, 'WorkHomeLocation', work_home_df)
-                home_location_df.to_excel(writer, sheet_name='HomeLocationBasedonDayFirstand', index=False)
-                self.format_excel_sheet(writer, 'HomeLocationBasedonDayFirstand', home_location_df)
-                
-                # 16. ISDCalls sheet
-                self.update_progress(90, "Creating ISDCalls sheet...")
-                isd_calls_df = self.create_isd_calls_sheet(df)
-                isd_calls_df.to_excel(writer, sheet_name='ISDCalls', index=False)
-                self.format_excel_sheet(writer, 'ISDCalls', isd_calls_df)
-                
-            self.update_progress(100, "Excel file generated successfully")
-            logging.info(f"Successfully generated Excel file: {output_path}")
-            
-            return True
-            
-        except Exception as e:
-            error_msg = f"Error generating Excel file: {str(e)}"
-            logging.error(error_msg)
-            raise Exception(error_msg)
+        """Legacy wrapper for compatibility with old modules."""
+        return self.generate_excel(df, output_path)
