@@ -1,55 +1,89 @@
-# CDR Desktop Analyzer
+ 📊Eccho beam too (v2)
 
-A robust desktop application for analyzing Call Detail Records (CDR) from CSV files. This application provides comprehensive analysis with 16 different Excel sheets covering various aspects of CDR data including call patterns, location analysis, device tracking, and roaming behavior.
+CDR Desktop Analyzer v2 is a desktop tool for analyzing Call Detail Records (CDRs) from CSV files.
+It generates a multi-sheet Excel report (9 tabs) with pre-sorted, styled, and color-coded sheets to make investigation and pattern analysis faster and more intuitive.
 
-## Features
+🚀 Key Features
+🔹 Core Functionality
 
-### Core Functionality
-- **Multi-file CDR Import**: Support for multiple CSV files with automatic metadata detection
-- **Robust Data Processing**: Handles various CSV formats and column naming conventions
-- **16 Analysis Sheets**: Comprehensive analysis covering all aspects of CDR data
-- **Real-time Progress Tracking**: Visual progress indicators for long-running operations
-- **Error Handling**: Comprehensive error handling with detailed logging
+Multi-file CDR Import – Import multiple CSV files in one session
 
-### Analysis Capabilities
-1. **Mapping**: Basic call/SMS records with timestamps and locations
-2. **Summary**: Aggregated statistics and overview
-3. **MaxCalls**: Top contacts by call frequency  
-4. **MaxDuration**: Top contacts by total call duration
-5. **MaxStay**: Locations with longest stays
-6. **OtherStateContactSummary**: Cross-state communication analysis
-7. **RoamingPeriod**: Roaming behavior and periods
-8. **IMEIPeriod**: Device usage patterns and periods
-9. **IMSIPeriod**: SIM card usage analysis
-10. **Night_Mapping**: Night-time activity (18:00-06:00)
-11. **Night_MaxStay**: Night-time location analysis
-12. **Day_Mapping**: Day-time activity (06:00-18:00)
-13. **Day_MaxStay**: Day-time location analysis
-14. **WorkHomeLocation**: Most frequent locations
-15. **HomeLocationBasedonDayFirstand**: Home location determination
-16. **ISDCalls**: International call analysis
+Automatic Column Handling – Supports varied CDR formats & naming conventions
 
-### User Interface
-- **Modern GUI**: Enhanced tkinter interface with intuitive controls
-- **File Management**: Easy file addition, removal, and validation
-- **Data Preview**: Preview CSV data before processing
-- **Batch Processing**: Process multiple files simultaneously
-- **Configuration Management**: Persistent settings and preferences
-- **Comprehensive Logging**: Application logs with multiple verbosity levels
+9 Analysis Sheets – Focused reports for communication, movement, devices, states, and behavior
 
-## Installation
+Pre-sorted Data – Sheets are automatically sorted by most useful metrics (events, duration, dates)
 
-### Requirements
-- Python 3.7 or higher
-- Required Python packages:
-  - pandas
-  - numpy
-  - openpyxl
-  - tkinter (usually included with Python)
+Smart Styling – Headers, important columns, alternating rows, and tab colors for improved UX
 
-### Setup
-1. Extract all files to a directory
-2. Install required packages:
-   ```bash
-   pip install pandas numpy openpyxl
-   
+Freeze Panes & Autofit – Easy navigation in large datasets
+
+Real-time Progress Updates – Shows progress percentage while processing
+
+Cancel Support – Stop processing mid-way if needed
+
+Detailed Logging – Built-in error and event logging for debugging
+
+📑 Generated Excel Sheets
+
+The analyzer currently produces 9 structured and styled sheets:
+
+_01_CDR_Format – Cleaned & standardized CDR format
+
+_02_Relationship_Call_Frequ – Communication frequency with contacts (sorted by total events & duration)
+
+_03_Cell_ID_Frequency – Cell tower usage frequency (sorted by total events)
+
+_04_Movement_Analysis – Chronological movement timeline (sorted by date/time)
+
+_05_Imei_Used – Device IMEI usage statistics (sorted by total events)
+
+_06_State_Connection – State-wise communication patterns (sorted by total events)
+
+_07_ISD_Call – International calls analysis (sorted by date/time)
+
+_08_Night_Call – Night-time communications (sorted by total events)
+
+_09_Mobile_SwitchOFF – Device switch-off gaps (sorted by start date)
+
+Each sheet has:
+✔️ Colored tab for quick identification
+✔️ Highlighted important headers & columns
+✔️ Alternating row shading for readability
+
+🖥️ User Interface
+
+GUI (tkinter) – Simple, investigator-friendly interface
+
+File Management – Add, preview, validate CSVs before analysis
+
+Batch Processing – Multiple CDRs handled at once
+
+One-click Excel Export – Saves all 9 reports into a single .xlsx file
+
+⚙️ Installation
+Requirements
+
+Python 3.7+
+
+Required packages:
+
+pip install pandas numpy openpyxl
+
+Setup
+
+Clone or download the repository
+
+Install the dependencies (above)
+
+Run the application:
+
+python main.py
+
+🛡️ Notes
+
+Optimized for law enforcement, forensic analysis, and telecom investigations
+
+Handles NaT/NaN dates safely in relationship & switch-off reports
+
+Backward compatible with generate_excel_file() used by older modules
