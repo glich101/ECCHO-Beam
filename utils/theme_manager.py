@@ -1,7 +1,10 @@
+ # Echo Beam — GUI Rewrites
+
+ 
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Theme Manager for CDR Analyzer - Light and Dark theme support
+Theme Manager for Echo Beam - Light and Dark theme support (modernized)
 """
 
 import tkinter as tk
@@ -13,204 +16,171 @@ class ThemeManager:
         self.root = root
         self.config = config
         self.current_theme = self.config.get('app', 'theme', fallback='light')
-        
+
+        # Accent color chosen to harmonize with your logo/background
+        self.accent = '#7C5CFF'  # soft purple-blue
+
         # Define theme colors
         self.themes = {
             'light': {
-                'bg': '#ffffff',
-                'fg': '#000000',
-                'select_bg': '#0078d4',
-                'select_fg': '#ffffff',
-                'frame_bg': '#f0f0f0',
-                'button_bg': '#e1e1e1',
-                'button_fg': '#000000',
+                'bg': '#f7f8fb',
+                'fg': '#111827',
+                'accent': self.accent,
+                'frame_bg': '#ffffff',
+                'muted': '#6b7280',
+                'button_bg': '#f3f4f6',
+                'button_fg': '#111827',
                 'entry_bg': '#ffffff',
-                'entry_fg': '#000000',
                 'listbox_bg': '#ffffff',
-                'listbox_fg': '#000000',
-                'menu_bg': '#f0f0f0',
-                'menu_fg': '#000000',
-                'status_bg': '#e8e8e8',
-                'status_fg': '#000000'
+                'status_bg': '#eef2ff'
             },
             'dark': {
-                'bg': '#2b2b2b',
-                'fg': '#ffffff',
-                'select_bg': '#404040',
-                'select_fg': '#ffffff',
-                'frame_bg': '#3c3c3c',
-                'button_bg': '#404040',
-                'button_fg': '#ffffff',
-                'entry_bg': '#404040',
-                'entry_fg': '#ffffff',
-                'listbox_bg': '#333333',
-                'listbox_fg': '#ffffff',
-                'menu_bg': '#2b2b2b',
-                'menu_fg': '#ffffff',
-                'status_bg': '#1e1e1e',
-                'status_fg': '#ffffff'
+                'bg': '#0f1724',
+                'fg': '#e6eef8',
+                'accent': self.accent,
+                'frame_bg': '#0b1220',
+                'muted': '#94a3b8',
+                'button_bg': '#111827',
+                'button_fg': '#e6eef8',
+                'entry_bg': '#071022',
+                'listbox_bg': '#071022',
+                'status_bg': '#061226'
             }
         }
-        
+
         self.setup_ttk_styles()
         self.apply_theme(self.current_theme)
-    
+
     def setup_ttk_styles(self):
         """Setup TTK styles for theming"""
         self.style = ttk.Style()
-        
-        # Configure styles for light theme
-        self.style.theme_create('light_theme', parent='alt', settings={
-            'TLabel': {
-                'configure': {'background': '#ffffff', 'foreground': '#000000'}
-            },
-            'TButton': {
-                'configure': {'background': '#e1e1e1', 'foreground': '#000000'},
-                'map': {
-                    'background': [('active', '#d1d1d1')],
-                    'foreground': [('active', '#000000')]
-                }
-            },
-            'TFrame': {
-                'configure': {'background': '#f0f0f0'}
-            },
-            'TLabelFrame': {
-                'configure': {'background': '#f0f0f0', 'foreground': '#000000'}
-            },
-            'TEntry': {
-                'configure': {'fieldbackground': '#ffffff', 'foreground': '#000000'}
-            },
-            'TScrollbar': {
-                'configure': {'background': '#e1e1e1', 'troughcolor': '#f0f0f0'}
-            }
-        })
-        
-        # Configure styles for dark theme
-        self.style.theme_create('dark_theme', parent='alt', settings={
-            'TLabel': {
-                'configure': {'background': '#2b2b2b', 'foreground': '#ffffff'}
-            },
-            'TButton': {
-                'configure': {'background': '#404040', 'foreground': '#ffffff'},
-                'map': {
-                    'background': [('active', '#505050')],
-                    'foreground': [('active', '#ffffff')]
-                }
-            },
-            'TFrame': {
-                'configure': {'background': '#3c3c3c'}
-            },
-            'TLabelFrame': {
-                'configure': {'background': '#3c3c3c', 'foreground': '#ffffff'}
-            },
-            'TEntry': {
-                'configure': {'fieldbackground': '#404040', 'foreground': '#ffffff'}
-            },
-            'TScrollbar': {
-                'configure': {'background': '#404040', 'troughcolor': '#2b2b2b'}
-            }
-        })
-    
+
+        # Base font
+        default_font = ('Segoe UI', 10)
+        header_font = ('Segoe UI', 12, 'bold')
+
+        # Create a modern button style
+        self.style.configure('EB.TButton',
+                             font=default_font,
+                             relief='flat',
+                             padding=(8, 6))
+        self.style.map('EB.TButton',
+                       background=[('active', '!disabled', '#dedffb')],
+                       foreground=[('disabled', '#888888')])
+
+        # Primary (accent) button
+        self.style.configure('EB.Primary.TButton',
+                             font=default_font,
+                             foreground='#ffffff',
+                             padding=(8, 6))
+
+        # Listbox-like frame
+        self.style.configure('EB.TFrame', background='#ffffff')
+        self.style.configure('EB.TLabelFrame', background='#ffffff')
+
+        # Progressbar style
+        try:
+            self.style.configure('EB.Horizontal.TProgressbar',
+                                 thickness=16)
+        except Exception:
+            pass
+
+        # Header label style
+        self.style.configure('EB.Header.TLabel', font=header_font)
+
     def apply_theme(self, theme_name):
         """Apply a theme to the application"""
         try:
             if theme_name not in self.themes:
                 logging.warning(f"Unknown theme: {theme_name}, using light theme")
                 theme_name = 'light'
-            
+
             self.current_theme = theme_name
             theme_colors = self.themes[theme_name]
-            
-            # Apply TTK theme
-            if theme_name == 'dark':
-                self.style.theme_use('dark_theme')
-            else:
-                self.style.theme_use('light_theme')
-            
+
             # Apply to root window
             self.root.configure(bg=theme_colors['bg'])
-            
-            # Apply to all existing widgets
+
+            # Apply to ttk where possible
+            # Configure primary button background dynamically using style map
+            accent = theme_colors['accent']
+            btn_bg = theme_colors['button_bg']
+
+            # Primary button background uses accent color
+            self.style.configure('EB.Primary.TButton', background=accent, foreground='#ffffff')
+            self.style.map('EB.Primary.TButton',
+                           background=[('active', accent), ('!disabled', accent)],
+                           foreground=[('!disabled', '#ffffff')])
+
+            self.style.configure('EB.TButton', background=btn_bg, foreground=theme_colors['button_fg'])
+
+            # Recursively apply colors to widgets (best-effort)
             self._apply_theme_to_widgets(self.root, theme_colors)
-            
+
             # Save theme preference
             self.config.set('app', 'theme', theme_name)
-            
+
             logging.info(f"Applied {theme_name} theme")
-            
+
         except Exception as e:
             logging.error(f"Error applying theme: {e}")
-    
+
     def _apply_theme_to_widgets(self, widget, colors):
-        """Recursively apply theme to all widgets"""
+        """Recursively apply theme to widgets (best-effort)
+        We avoid changing widget classes that may break behavior.
+        """
         try:
-            widget_class = widget.winfo_class()
-            
-            # Apply theme based on widget type
-            if widget_class == 'Toplevel':
-                widget.configure(bg=colors['bg'])
-            elif widget_class == 'Frame':
-                widget.configure(bg=colors['frame_bg'])
-            elif widget_class == 'Label':
-                widget.configure(bg=colors['bg'], fg=colors['fg'])
-            elif widget_class == 'Button':
-                widget.configure(
-                    bg=colors['button_bg'], 
-                    fg=colors['button_fg'],
-                    activebackground=colors['select_bg'],
-                    activeforeground=colors['select_fg']
-                )
-            elif widget_class == 'Entry':
-                widget.configure(
-                    bg=colors['entry_bg'], 
-                    fg=colors['entry_fg'],
-                    insertbackground=colors['fg']
-                )
-            elif widget_class == 'Text':
-                widget.configure(
-                    bg=colors['entry_bg'], 
-                    fg=colors['entry_fg'],
-                    insertbackground=colors['fg']
-                )
-            elif widget_class == 'Listbox':
-                widget.configure(
-                    bg=colors['listbox_bg'], 
-                    fg=colors['listbox_fg'],
-                    selectbackground=colors['select_bg'],
-                    selectforeground=colors['select_fg']
-                )
-            elif widget_class == 'Menu':
-                widget.configure(
-                    bg=colors['menu_bg'], 
-                    fg=colors['menu_fg'],
-                    activebackground=colors['select_bg'],
-                    activeforeground=colors['select_fg']
-                )
-            elif widget_class == 'Scrollbar':
-                widget.configure(
-                    bg=colors['button_bg'],
-                    troughcolor=colors['frame_bg'],
-                    activebackground=colors['select_bg']
-                )
-            
-            # Recursively apply to children
+            cls = widget.winfo_class()
+
+            # Apply common widget attributes
+            if cls in ('TFrame', 'Frame'):
+                try:
+                    widget.configure(bg=colors['frame_bg'])
+                except Exception:
+                    pass
+            elif cls in ('TLabel', 'Label'):
+                try:
+                    widget.configure(bg=colors['frame_bg'], fg=colors['fg'])
+                except Exception:
+                    pass
+            elif cls in ('Button', 'TButton'):
+                try:
+                    widget.configure(bg=colors['button_bg'], fg=colors['button_fg'], activebackground=colors['accent'])
+                except Exception:
+                    pass
+            elif cls in ('Entry', 'TEntry'):
+                try:
+                    widget.configure(bg=colors['entry_bg'], fg=colors['fg'], insertbackground=colors['fg'])
+                except Exception:
+                    pass
+            elif cls in ('Text',):
+                try:
+                    widget.configure(bg=colors['entry_bg'], fg=colors['fg'], insertbackground=colors['fg'])
+                except Exception:
+                    pass
+            elif cls in ('Listbox',):
+                try:
+                    widget.configure(bg=colors['listbox_bg'], fg=colors['fg'], selectbackground=colors['accent'], selectforeground='#ffffff')
+                except Exception:
+                    pass
+
             for child in widget.winfo_children():
                 self._apply_theme_to_widgets(child, colors)
-                
-        except Exception as e:
-            # Some widgets might not support certain configurations
+
+        except Exception:
+            # Some widgets will not accept configuration; skip silently
             pass
-    
+
     def toggle_theme(self):
         """Toggle between light and dark themes"""
         new_theme = 'dark' if self.current_theme == 'light' else 'light'
         self.apply_theme(new_theme)
         return new_theme
-    
+
     def get_current_theme(self):
         """Get the current theme name"""
         return self.current_theme
-    
+
     def get_theme_colors(self, theme_name=None):
         """Get color scheme for a theme"""
         if theme_name is None:

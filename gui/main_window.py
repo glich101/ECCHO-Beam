@@ -362,53 +362,70 @@ class MainWindow:
     
     def show_about(self):
         """Show about dialog"""
-        about_text = """CDR Desktop Analyzer v1.0
+       
+        about_text = """CDR Desktop Analyzer (Echo Beam) v1.0
 
-A robust desktop application for analyzing Call Detail Records (CDR) from CSV files.
+A professional desktop application for processing and analyzing 
+Call Detail Records (CDRs) from telecom CSV files.
 
-Features:
-• Multi-file CDR import and processing
-• 16 different analysis sheets
-• Robust error handling and validation
-• Progress tracking and cancellation
-• Data preview capabilities
+Key Features:
+• Multi-file CDR import and batch processing
+• 16 analysis sheets with detailed insights
+• Data validation, error handling, and file preview
+• Progress tracking with cancellation option
+• Clean, user-friendly interface built with Python (tkinter)
 
-Developed with Python and tkinter
-        """
-        messagebox.showinfo("About", about_text)
+© 2025 Echo Beam Analytics. All rights reserved.
+    """
+        messagebox.showinfo("About",about_text)
+
     
     def show_help(self):
         """Show help/user guide"""
-        help_text = """CDR Desktop Analyzer - User Guide
+        help_text = """CDR Desktop Analyzer – User Guide
 
-1. Adding Files:
-   - Click 'Add Files' or use File > Add CSV Files
-   - Select one or more CSV files containing CDR data
-   - Files will be validated automatically
+The CDR Desktop Analyzer (Echo Beam) is a professional tool for processing and analyzing Call Detail Records (CDRs). It converts raw telecom data into a structured Excel report with multiple analysis sheets.
 
-2. Processing:
-   - Select files from the list (or leave all selected)
-   - Click 'Process Files'
-   - Choose output location for Excel file
-   - Monitor progress in the dialog
+1. Adding Files
 
-3. Analysis Sheets:
-   The generated Excel file contains 16 sheets:
-   - Mapping: Basic call/SMS records
-   - Summary: Aggregated statistics
-   - MaxCalls/MaxDuration: Top contacts by activity
-   - Night/Day analysis for different time periods
-   - Location and roaming analysis
-   - Device (IMEI/IMSI) analysis
-   - International calls analysis
+Click “Add Files” or go to File > Add CSV Files
+Select one or more CSV files containing CDR data
+Files will be validated automatically
+💡 Tip: Use “Preview Data” to confirm file format before processing.
 
-4. Tips:
-   - Use 'Preview Data' to check file format
-   - 'Validate Files' checks for common issues
-   - Processing can be cancelled anytime
-   - Large files may take several minutes
+2. Processing
 
-For support, check the application logs in the Status panel.
+Select files from the list (or leave all selected)
+Click “Process Files”
+Choose an output location for the Excel file
+Monitor progress in the dialog
+⚠️ Large files may take several minutes depending on system performance.
+🛑 Processing can be cancelled at any time.
+
+3. Analysis Sheets
+
+The generated Excel file contains 16 sheets:
+Mapping: Basic call/SMS records
+Summary: Aggregated statistics
+MaxCalls/MaxDuration: Top contacts by activity
+Night/Day analysis for different time periods
+Location and roaming analysis
+Device (IMEI/IMSI) analysis
+International calls analysis
+
+4. Tips
+
+Use “Validate Files” to check for formatting issues before processing
+For large datasets, process in smaller batches for efficiency
+The Excel report is fully filterable and sortable for deeper analysis
+Keep original files safe — the tool only reads data, it does not modify them
+
+5. Support & Troubleshooting
+
+Check the Status Panel for logs during processing
+If errors occur, review the application logs (Help > View Logs)
+Ensure input files are CSV format with standard delimiters (comma, semicolon, or tab)
+For unresolved issues, share log files with the support team
         """
         
         # Create help window

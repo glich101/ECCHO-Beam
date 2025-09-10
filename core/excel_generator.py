@@ -187,7 +187,10 @@ class ExcelGenerator:
             })
             idx += 1
 
-        return pd.DataFrame(rows)
+        return pd.DataFrame(rows).sort_values(
+            by=["Total Event", "Total_Duration"], ascending=[False, False]
+        ).reset_index(drop=True)
+
 
     def create__03_Cell_ID_Frequency(self, df):
         if df is None or df.empty:
@@ -229,7 +232,10 @@ class ExcelGenerator:
             })
             idx += 1
 
-        return pd.DataFrame(rows)
+        return pd.DataFrame(rows).sort_values(
+            by=["Total Event"], ascending=False
+        ).reset_index(drop=True)
+
 
     def create__04_Movement_Analysis(self, df):
         if df is None or df.empty:
@@ -246,7 +252,12 @@ class ExcelGenerator:
         ]].copy()
 
         out.insert(0, "ID", range(1, len(out) + 1))
-        return out
+        
+        out["CALL_DATETIME"] = pd.to_datetime(
+            out["CALL_DATE"].astype(str) + " " + out["CALL_TIME"].astype(str),
+            errors="coerce"
+        )
+        return out.sort_values(by=["CALL_DATETIME"]).drop(columns=["CALL_DATETIME"]).reset_index(drop=True)
 
     def create__05_Imei_Used(self, df):
         if df is None or df.empty:
@@ -289,7 +300,9 @@ class ExcelGenerator:
             })
             idx += 1
 
-        return pd.DataFrame(rows)
+        return pd.DataFrame(rows).sort_values(
+            by=["Total Event"], ascending=False
+        ).reset_index(drop=True)
 
     def create__06_State_Connection(self, df):
         if df is None or df.empty:
@@ -328,7 +341,10 @@ class ExcelGenerator:
             })
             idx += 1
 
-        return pd.DataFrame(rows)
+        return pd.DataFrame(rows).sort_values(
+            by=["Total Event"], ascending=False
+        ).reset_index(drop=True)
+        
 
     def create__07_ISD_Call(self, df):
         if df is None or df.empty:
@@ -381,7 +397,12 @@ class ExcelGenerator:
         out.insert(0, "CdrNo", out.pop("CDR Party No"))
         out["Call Type"] = isd["CallTypeStd"].values
 
-        return out.reset_index(drop=True)
+        out["DATETIME"] = pd.to_datetime(
+            out["Date"].astype(str) + " " + out["Time"].astype(str),
+            errors="coerce"
+        )
+        return out.sort_values(by=["DATETIME"]).drop(columns=["DATETIME"]).reset_index(drop=True)
+
 
     def create__08_Night_Call(self, df):
         if df is None or df.empty:
@@ -422,7 +443,10 @@ class ExcelGenerator:
             })
             idx += 1
 
-        return pd.DataFrame(rows)
+        return pd.DataFrame(rows).sort_values(
+            by=["Total Event"], ascending=False
+        ).reset_index(drop=True)
+
 
     def create__09_Mobile_SwitchOFF(self, df):
         if df is None or df.empty:
@@ -453,7 +477,10 @@ class ExcelGenerator:
                     })
                     idx += 1
 
-        return pd.DataFrame(rows)
+        return pd.DataFrame(rows).sort_values(
+            by=["Start_Date"], ascending=True
+        ).reset_index(drop=True)
+
 
     # -------------------------
     # Main generate function
