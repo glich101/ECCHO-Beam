@@ -159,14 +159,14 @@ class PreviewDialog:
             processor = CDRProcessor()
             header_start = processor.detect_header_start(self.file_path)
             
-            # Load first 100 rows
+            # Load first 1000 rows
             df = pd.read_csv(
                 self.file_path,
                 engine="python",
                 sep=",",
                 header=0,
                 skiprows=header_start,
-                nrows=100,
+                nrows=1000,
                 on_bad_lines="skip",
                 dtype=str
             )

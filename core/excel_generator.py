@@ -1,13 +1,5 @@
- #!/usr/bin/env python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-Excel Generator v2 (final patched, fixed indentation)
-- Creates exactly 9 sheets (_01 … _09) as requested
-- Highlights important headers
-- Fix: safe handling of NaT/NaN dates in Relationship and Mobile SwitchOFF sheets
-- Backward compatibility: keep generate_excel_file()
-"""
-
 import re
 import logging
 from datetime import date
@@ -61,7 +53,7 @@ class ExcelGenerator:
             imp_fill = PatternFill(start_color="FF305496", end_color="FF305496", fill_type="solid")   # dark blue
             normal_fill = PatternFill(start_color="FF4472C4", end_color="FF4472C4", fill_type="solid")  # lighter blue
             alt_fill = PatternFill(start_color="FFF2F2F2", end_color="FFF2F2F2", fill_type="solid")
-            highlight_fill = PatternFill(start_color="FFFFEB9C", end_color="FFFFEB9C", fill_type="solid")  # yellow
+            highlight_fill = PatternFill(start_color="FFADD8E6", fill_type="solid")  # light blue
             thin = Side(border_style="thin", color="FF999999")
             border = Border(left=thin, right=thin, top=thin, bottom=thin)
 
@@ -187,10 +179,7 @@ class ExcelGenerator:
             })
             idx += 1
 
-        return pd.DataFrame(rows).sort_values(
-            by=["Total Event", "Total_Duration"], ascending=[False, False]
-        ).reset_index(drop=True)
-
+        return pd.DataFrame(rows)
 
     def create__03_Cell_ID_Frequency(self, df):
         if df is None or df.empty:
@@ -232,10 +221,7 @@ class ExcelGenerator:
             })
             idx += 1
 
-        return pd.DataFrame(rows).sort_values(
-            by=["Total Event"], ascending=False
-        ).reset_index(drop=True)
-
+        return pd.DataFrame(rows)
 
     def create__04_Movement_Analysis(self, df):
         if df is None or df.empty:
@@ -252,12 +238,7 @@ class ExcelGenerator:
         ]].copy()
 
         out.insert(0, "ID", range(1, len(out) + 1))
-        
-        out["CALL_DATETIME"] = pd.to_datetime(
-            out["CALL_DATE"].astype(str) + " " + out["CALL_TIME"].astype(str),
-            errors="coerce"
-        )
-        return out.sort_values(by=["CALL_DATETIME"]).drop(columns=["CALL_DATETIME"]).reset_index(drop=True)
+        return out
 
     def create__05_Imei_Used(self, df):
         if df is None or df.empty:
@@ -300,51 +281,91 @@ class ExcelGenerator:
             })
             idx += 1
 
-        return pd.DataFrame(rows).sort_values(
-            by=["Total Event"], ascending=False
-        ).reset_index(drop=True)
+        return pd.DataFrame(rows)
 
     def create__06_State_Connection(self, df):
+        columns = [
+            "Id", "CDR Party No", "Connection of State", "Total Event",
+            "Call In", "Call Out", "SMS In", "SMS Out",
+            "Call In_Duration", "Call Out_Duration", "Total_Duration"
+        ]
+
+        rows = []  # Always define rows
+
         if df is None or df.empty:
-            return pd.DataFrame(columns=[
-                "Id", "CDR Party No", "Connection of State", "Total Event",
-                "Call In", "Call Out", "SMS In", "SMS Out",
-                "Call In_Duration", "Call Out_Duration", "Total_Duration"
-            ])
+            return pd.DataFrame(columns=columns)
 
-        df["ConnectionState"] = (
-            df["Home Circle"].fillna("")
-            .replace("", np.nan)
-            .fillna(df["ROAM_CIRCLE"].fillna(""))
-        )
-        grp = df.groupby(["CDR Party No", "ConnectionState"], dropna=False)
+        # Mapping dictionary
+        state_map = {
+            "andhra pradesh": "AP", "ap": "AP",
+            "assam": "AS", "as": "AS",
+            "bihar & jharkhand": "BR", "br": "BR",
+            "chennai": "CH", "ch": "CH",
+            "delhi": "DL", "dl": "DL",
+            "gujarat": "GJ", "gj": "GJ","Guj-Vodafone - GUJARAT - INDIA" : "GJ",
+            "haryana": "HR", "hr": "HR",
+            "himachal pradesh": "HP", "hp": "HP",
+            "jammu and kashmir": "JK", "jk": "JK",
+            "karnataka": "KA", "ka": "KA",
+            "kerala & lakshadweep": "KL", "kl": "KL",
+            "kolkata": "KO", "ko": "KO",
+            "madhya pradesh & chhattisgarh": "MP", "mp": "MP",
+            "maharashtra & goa": "MH", "mh": "MH",
+            "mumbai": "MU", "mu": "MU",
+            "north east": "NE", "ne": "NE",
+            "odisha": "OR", "or": "OR",
+            "punjab": "PB", "pb": "PB",
+            "rajasthan": "RJ", "rj": "RJ",
+            "tamil nadu": "TN", "tn": "TN",
+            "up (east)": "UE", "ue": "UE",
+            "up (west)": "UW", "uw": "UW",
+            "west bengal": "WB", "wb": "WB",
+        }
 
-        rows = []
-        idx = 1
+        def normalize_state(val):
+            if pd.isna(val):
+                return np.nan
+            v = str(val).strip().lower()
+            return state_map.get(v, v)
 
-        for (cdr, state), g in grp:
-            if str(state).strip() == "":
-                continue
+        try:
+            df["ConnectionState"] = (
+                df["Home Circle"].fillna("")
+                .replace("", np.nan)
+                .fillna(df["ROAM_CIRCLE"].fillna(""))
+                .map(normalize_state)
+            )
 
-            rows.append({
-                "Id": idx,
-                "CDR Party No": cdr,
-                "Connection of State": state,
-                "Total Event": len(g),
-                "Call In": int((g["CallTypeStd"] == "CALL_IN").sum()),
-                "Call Out": int((g["CallTypeStd"] == "CALL_OUT").sum()),
-                "SMS In": int((g["CallTypeStd"] == "SMS_IN").sum()),
-                "SMS Out": int((g["CallTypeStd"] == "SMS_OUT").sum()),
-                "Call In_Duration": int(g.loc[g["CallTypeStd"] == "CALL_IN", "DurationSeconds"].sum()),
-                "Call Out_Duration": int(g.loc[g["CallTypeStd"] == "CALL_OUT", "DurationSeconds"].sum()),
-                "Total_Duration": int(g["DurationSeconds"].sum())
-            })
-            idx += 1
+            grp = df.groupby(["CDR Party No", "ConnectionState"], dropna=False)
+            idx = 1
 
-        return pd.DataFrame(rows).sort_values(
-            by=["Total Event"], ascending=False
-        ).reset_index(drop=True)
-        
+            for (cdr, state), g in grp:
+                if pd.isna(state) or str(state).strip() == "":
+                    continue
+
+                rows.append({
+                    "Id": idx,
+                    "CDR Party No": cdr,
+                    "Connection of State": state,
+                    "Total Event": len(g),
+                    "Call In": int((g["CallTypeStd"] == "CALL_IN").sum()),
+                    "Call Out": int((g["CallTypeStd"] == "CALL_OUT").sum()),
+                    "SMS In": int((g["CallTypeStd"] == "SMS_IN").sum()),
+                    "SMS Out": int((g["CallTypeStd"] == "SMS_OUT").sum()),
+                    "Call In_Duration": int(g.loc[g["CallTypeStd"] == "CALL_IN", "DurationSeconds"].sum()),
+                    "Call Out_Duration": int(g.loc[g["CallTypeStd"] == "CALL_OUT", "DurationSeconds"].sum()),
+                    "Total_Duration": int(g["DurationSeconds"].sum())
+                })
+                idx += 1
+
+        except Exception as e:
+            print("❌ ERROR in create__06_State_Connection:", e)
+            return pd.DataFrame(columns=columns)
+
+    # Always return a DataFrame — even if rows is empty
+        return pd.DataFrame(rows, columns=columns).sort_values(
+        by=["Total Event"], ascending=False
+    ).reset_index(drop=True)
 
     def create__07_ISD_Call(self, df):
         if df is None or df.empty:
@@ -397,12 +418,7 @@ class ExcelGenerator:
         out.insert(0, "CdrNo", out.pop("CDR Party No"))
         out["Call Type"] = isd["CallTypeStd"].values
 
-        out["DATETIME"] = pd.to_datetime(
-            out["Date"].astype(str) + " " + out["Time"].astype(str),
-            errors="coerce"
-        )
-        return out.sort_values(by=["DATETIME"]).drop(columns=["DATETIME"]).reset_index(drop=True)
-
+        return out.reset_index(drop=True)
 
     def create__08_Night_Call(self, df):
         if df is None or df.empty:
@@ -443,10 +459,7 @@ class ExcelGenerator:
             })
             idx += 1
 
-        return pd.DataFrame(rows).sort_values(
-            by=["Total Event"], ascending=False
-        ).reset_index(drop=True)
-
+        return pd.DataFrame(rows)
 
     def create__09_Mobile_SwitchOFF(self, df):
         if df is None or df.empty:
@@ -477,10 +490,7 @@ class ExcelGenerator:
                     })
                     idx += 1
 
-        return pd.DataFrame(rows).sort_values(
-            by=["Start_Date"], ascending=True
-        ).reset_index(drop=True)
-
+        return pd.DataFrame(rows)
 
     # -------------------------
     # Main generate function

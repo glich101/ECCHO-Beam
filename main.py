@@ -1,10 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-CDR Desktop Analyzer - Main Entry Point
-Enhanced desktop application for CDR analysis with robust GUI and error handling
-"""
-
+"""Main application entry point for ECCHO BEAM - CDR Desktop Analyzer"""
 import sys
 import os
 import tkinter as tk
@@ -28,7 +24,7 @@ class CDRAnalyzerApp:
     def setup_logging(self):
         """Setup application logging"""
         log_level = self.config.get('logging', 'level', fallback='INFO')
-        setup_logger(log_level)# type: ignore
+        setup_logger(level=log_level)
         
     def handle_exception(self, exc_type, exc_value, exc_traceback):
         """Global exception handler"""
@@ -47,25 +43,25 @@ class CDRAnalyzerApp:
         try:
             # Setup logging
             self.setup_logging()
-            logging.info("Starting CDR Desktop Analyzer")
+            logging.info("Starting ECCHO BEAM - CDR Desktop Analyzer")
             
             # Set global exception handler
             sys.excepthook = self.handle_exception
             
             # Create main window
             self.root = tk.Tk()
-            self.root.title("CDR Desktop Analyzer")
+            self.root.title("ECCHO BEAM - CDR Desktop Analyzer")
             self.root.geometry("1200x800")
             self.root.minsize(800, 600)
-            
-            # Set application icon (if available)
+            icon_path = os.path.join("assets", "icon.ico")
             try:
-                # Note: SVG not directly supported by tkinter, would need conversion
-                # For now, using default system icon
-                pass
-            except Exception:
-                pass
-            
+                if os.path.exists(icon_path):
+                    icon_img = tk.PhotoImage(file=icon_path)
+                    self.root.iconphoto(False, icon_img)
+                else:
+                    print("⚠️ Icon file not found, using default icon.")
+            except Exception as e:
+                print(f"⚠️ Could not set icon: {e}")
             # Initialize main window
             self.main_window = MainWindow(self.root, self.config)
             

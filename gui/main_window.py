@@ -37,7 +37,7 @@ class MainWindow:
         """Setup the main user interface"""
         # --- Add background image ---
         try:
-            bg_image = Image.open("assets/space_bg.png")
+            bg_image = Image.open("assets/planet_logo.png")
             bg_photo = ImageTk.PhotoImage(bg_image)
             self.bg_label = tk.Label(self.root, image=bg_photo)
             self.bg_label.image = bg_photo  # Keep reference # type: ignore
@@ -76,8 +76,8 @@ class MainWindow:
         # Title
         title_label = ttk.Label(
             header_frame, 
-            text="CDR Desktop Analyzer", 
-            font=('Arial', 16, 'bold')
+            text="ECCHO BEAM - CDR DESKTOP ANALYZER", 
+            font=('Michroma', 16, 'bold')
         )
         title_label.grid(row=0, column=title_col, sticky=tk.W)
         
