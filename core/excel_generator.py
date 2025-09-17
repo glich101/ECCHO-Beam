@@ -145,7 +145,6 @@ class ExcelGenerator:
             if str(opp).strip() == "":
                 continue
 
-            # Only use valid dates
             valid_dates = [d for d in g["date_only"] if isinstance(d, date) and pd.notna(d)]
             if valid_dates:
                 start = min(valid_dates)
@@ -165,8 +164,8 @@ class ExcelGenerator:
                 "Opp Party-Name": g["Opp Party-Name"].iloc[0]
                     if "Opp Party-Name" in g.columns else str(opp),
                 "Opp Party-Full Address": "",
-                "Start_Date": start.strftime("%Y-%m-%d") if (start and pd.notna(start) and isinstance(start, date)) else "",
-                "End_Date": end.strftime("%Y-%m-%d") if (end and pd.notna(end) and isinstance(end, date)) else "",
+                "Start_Date": start.strftime("%Y-%m-%d") if start else "",
+                "End_Date": end.strftime("%Y-%m-%d") if end else "",
                 "Date_Diff": date_diff,
                 "Total Event": len(g),
                 "Call In": int((g["CallTypeStd"] == "CALL_IN").sum()),
@@ -179,7 +178,14 @@ class ExcelGenerator:
             })
             idx += 1
 
-        return pd.DataFrame(rows)
+        result_df = pd.DataFrame(rows)
+
+        # 🔑 Sort by End_Date descending
+        if not result_df.empty:
+            result_df["End_Date"] = pd.to_datetime(result_df["End_Date"], errors="coerce")
+            result_df = result_df.sort_values(by="End_Date", ascending=False, na_position='last')
+
+        return result_df
 
     def create__03_Cell_ID_Frequency(self, df):
         if df is None or df.empty:
@@ -221,7 +227,16 @@ class ExcelGenerator:
             })
             idx += 1
 
-        return pd.DataFrame(rows)
+        result_df = pd.DataFrame(rows)
+
+        # 🔑 Sort by Total Event descending
+        if not result_df.empty:
+            result_df = result_df.sort_values(by="Total Event", ascending=False)
+
+            # Optional: reset Id to reflect the new order
+            result_df["Id"] = range(1, len(result_df) + 1)
+
+        return result_df
 
     def create__04_Movement_Analysis(self, df):
         if df is None or df.empty:
@@ -459,7 +474,15 @@ class ExcelGenerator:
             })
             idx += 1
 
-        return pd.DataFrame(rows)
+        result_df = pd.DataFrame(rows)
+
+        # 🔑 Sort by Total Event descending
+        if not result_df.empty:
+            result_df = result_df.sort_values(by="Total Event", ascending=False)
+            result_df["Id"] = range(1, len(result_df) + 1)
+
+        return result_df
+
 
     def create__09_Mobile_SwitchOFF(self, df):
         if df is None or df.empty:

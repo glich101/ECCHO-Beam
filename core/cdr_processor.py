@@ -1,11 +1,6 @@
   #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-CDR Processor v3 (final patched)
-- Produces standardized DataFrame for the 9 Excel sheets
-- Keeps public API same as v1
-- Fix: always produce CALL_DURATION (no CALL_DURATION_SEC mismatch)
-"""
+"""CDR Processing and Standardization Logic"""
 
 import pandas as pd
 import numpy as np
@@ -19,7 +14,7 @@ NIGHT_START = 21
 NIGHT_END = 7
 
 # aliases for column detection
-ALIASES = {
+ALIASES = { 
     "target_number": ["target /a party number","target no","cdr party no","target"],
     "a_party": ["calling party telephone number","a party number","msisdn a","a_number","calling party"],
     "b_party": ["called party telephone number","b party number","b party no","called party"],
@@ -166,49 +161,69 @@ class CDRProcessor:
 
     def standardize_rows(self, df):
         try:
-            self.update_progress(30, "Standardizing...")
+            self.update_progress(30, "Standardizing DATA ...")
             cols = self._lower_map(df.columns)
             pick = lambda k: self._pick(cols, df, ALIASES[k])
+            def to_int_safe(series, name=""):
+                series = series.fillna("")  # treat missing as empty string
+                numeric = pd.to_numeric(series, errors='coerce')
+                mask_bad = numeric.isna() & series.ne("")  # rows that failed numeric conversion
+                if mask_bad.any():
+                    logging.warning(f"[WARN] {mask_bad.sum()} non-numeric values in column '{name}', kept as string.")
+                    # Convert to object dtype and put original values back
+                    numeric = numeric.astype(object)
+                    numeric[mask_bad] = series[mask_bad]
+                return numeric  # may be mixed int+str but no data loss
+
+          
+            df = df.applymap(lambda x: str(x).strip() if pd.notnull(x) else "")
 
             Raw = pd.DataFrame({
-                'TargetRaw': pick('target_number').astype(str),
-                'Araw': pick('a_party').astype(str),
-                'Braw': pick('b_party').astype(str),
-                'CallDateRaw': pick('call_date').astype(str),
-                'CallTimeRaw': pick('call_time').astype(str),
-                'DurationRaw': pick('duration').astype(str),
-                'CallTypeRaw': pick('call_type').astype(str),
-                'TOC': pick('toc').astype(str),
-                'FirstCellID': pick('first_cell_id').astype(str),
-                'LastCellID': pick('last_cell_id').astype(str),
-                'FirstCellAddr': pick('first_cell_addr').astype(str),
-                'LastCellAddr': pick('last_cell_addr').astype(str),
-                'FirstCellCity': pick('first_cell_city').astype(str),
-                'LastCellCity': pick('last_cell_city').astype(str),
-                'FirstLatLong': self._pick(cols, df, ALIASES.get('first_lat_long', [])).astype(str),
-                'LastLatLong': self._pick(cols, df, ALIASES.get('last_lat_long', [])).astype(str),
-                'IMEI': pick('imei').astype(str),
-                'IMSI': pick('imsi').astype(str),
-                'Circle': pick('circle').astype(str),
-                'HomeCircle': pick('home_circle').astype(str),
-                'operator': pick('operator').astype(str),
-                'SMSC': self._pick(cols, df, ALIASES.get('smsc', [])).astype(str)
+                # Big numeric fields → safe numeric conversion
+                'TargetRaw': to_int_safe(pick('target_number'), name="Target Number"),
+                'Araw': to_int_safe(pick('a_party'), name="A Party"),
+                'Braw': to_int_safe(pick('b_party'), name="B Party"),
+                'IMEI': to_int_safe(pick('imei'), name="IMEI"),
+                'IMSI': to_int_safe(pick('imsi'), name="IMSI"),
+                'FirstCellID': to_int_safe(pick('first_cell_id'), name="First Cell ID"),
+                'LastCellID': to_int_safe(pick('last_cell_id'), name="Last Cell ID"),
+
+                # Other fields remain as clean strings
+                'CallDateRaw': pick('call_date'),
+                'CallTimeRaw': pick('call_time'),
+                'DurationRaw': pick('duration'),
+                'CallTypeRaw': pick('call_type'),
+                'TOC': pick('toc'),
+                'FirstCellAddr': pick('first_cell_addr'),
+                'LastCellAddr': pick('last_cell_addr'),
+                'FirstCellCity': pick('first_cell_city'),
+                'LastCellCity': pick('last_cell_city'),
+                'FirstLatLong': self._pick(cols, df, ALIASES.get('first_lat_long', [])),
+                'LastLatLong': self._pick(cols, df, ALIASES.get('last_lat_long', [])),
+                'Circle': pick('circle'),
+                'HomeCircle': pick('home_circle'),
+                'operator': pick('operator'),
+                'SMSC': self._pick(cols, df, ALIASES.get('smsc', []))
             })
 
-            Raw['DateObj'] = Raw['CallDateRaw'].apply(self.parse_date_field) # type: ignore
-            Raw['TimeObj'] = Raw['CallTimeRaw'].apply(self.parse_time_field) # type: ignore
+            # ✅ Parse date & time safely
+            Raw['DateObj'] = Raw['CallDateRaw'].apply(self.parse_date_field) #type: ignore
+            Raw['TimeObj'] = Raw['CallTimeRaw'].apply(self.parse_time_field) #type: ignore
             Raw['start_dt'] = pd.to_datetime(
-                [pd.NaT if (d is None or pd.isna(d) or t is None) else f"{d} {t}" for d, t in zip(Raw['DateObj'], Raw['TimeObj'])],# type: ignore
-                errors="coerce" # type: ignore
-            ) # type: ignore
-            # ✅ Always keep CALL_DURATION
-            Raw['CALL_DURATION'] = Raw['DurationRaw'].apply(self.to_seconds).astype('Int64')
+                [pd.NaT if (d is None or pd.isna(d) or t is None) else f"{d} {t}" #type: ignore
+                for d, t in zip(Raw['DateObj'], Raw['TimeObj'])],
+                errors="coerce"
+            )
 
-            Raw['A_norm'] = Raw['Araw'].apply(self.normalize_msisdn)
-            Raw['B_norm'] = Raw['Braw'].apply(self.normalize_msisdn)
-            Raw['Target_norm'] = Raw['TargetRaw'].apply(self.normalize_msisdn)
+            # ✅ Call duration stays numeric
+            Raw['CALL_DURATION'] = pd.to_numeric(Raw['DurationRaw'], errors='coerce').fillna(0).astype('Int64')
 
-            # pick main number
+            # ✅ Normalize numbers (convert to str first, since some may be strings)
+            Raw['A_norm'] = Raw['Araw'].astype(str).apply(self.normalize_msisdn)
+            Raw['B_norm'] = Raw['Braw'].astype(str).apply(self.normalize_msisdn)
+            Raw['Target_norm'] = Raw['TargetRaw'].astype(str).apply(self.normalize_msisdn)
+
+            # ✅ Pick main number safely
             if Raw['Target_norm'].replace('', np.nan).dropna().shape[0] > 0:
                 top = Raw['Target_norm'].replace('', np.nan).mode().iat[0]
             else:
@@ -217,6 +232,7 @@ class CDRProcessor:
                 top = combined.mode().iat[0] if not combined.empty else ""
             Raw['CdrNo'] = top
 
+          
             def derive_call_type(ct, toc):
                 s = f"{ct} {toc}".lower()
                 is_sms = 'sms' in s
@@ -234,7 +250,7 @@ class CDRProcessor:
             Raw['CallTypeStd'] = [derive_call_type(ct, toc) for ct, toc in zip(Raw['CallTypeRaw'], Raw['TOC'])]
 
             def pick_counterparty(row):
-                a_raw, b_raw = row['Araw'], row['Braw']
+                a_raw, b_raw = str(row['Araw']), str(row['Braw'])
                 a_num, b_num = row['A_norm'], row['B_norm']
                 t = str(row['CdrNo'])
                 ctype = str(row['CallTypeStd'])
@@ -251,6 +267,7 @@ class CDRProcessor:
             Raw['CALL_TIME'] = Raw['TimeObj'].apply(lambda t: t.strftime("%H:%M:%S") if pd.notna(t) else "")
             Raw['IsNight'] = Raw['start_dt'].dt.hour.apply(self.is_night_hour)
 
+            # ✅ Build standardized output (convert mixed types to str just for output)
             std = pd.DataFrame({
                 'CDR Party No': Raw['CdrNo'],
                 'Opposite Party No': Raw['Counterparty'],
@@ -261,16 +278,16 @@ class CDRProcessor:
                 'CALL_TIME': Raw['CALL_TIME'],
                 'CallTypeStd': Raw['CallTypeStd'],
                 'CALL_DURATION': Raw['CALL_DURATION'],
-                'FIRST_CELL_ID_A': Raw['FirstCellID'],
+                'FIRST_CELL_ID_A': Raw['FirstCellID'].astype(str),
                 'First_Cell_Site_Address': Raw['FirstCellAddr'],
                 'First_Cell_Site_Name-City': Raw['FirstCellCity'],
                 'First_Lat_Long': Raw['FirstLatLong'],
-                'LAST_CELL_ID_A': Raw['LastCellID'],
+                'LAST_CELL_ID_A': Raw['LastCellID'].astype(str),
                 'Last_Cell_Site_Address': Raw['LastCellAddr'],
                 'Last_Cell_Site_Name-City': Raw['LastCellCity'],
                 'Last_Lat_Long': Raw['LastLatLong'],
-                'ESN_IMEI_A': Raw['IMEI'],
-                'IMSI_A': Raw['IMSI'],
+                'ESN_IMEI_A': Raw['IMEI'].astype(str),
+                'IMSI_A': Raw['IMSI'].astype(str),
                 'CUST_TYPE': "",
                 'SMSC_CENTER': Raw['SMSC'],
                 'Home Circle': Raw['HomeCircle'],
@@ -280,7 +297,6 @@ class CDRProcessor:
                 'ID': pd.RangeIndex(start=1, stop=len(Raw)+1).astype(int)
             })
 
-            # helpers for Excel generator
             std['start_dt'] = Raw['start_dt']
             std['IsNight'] = Raw['IsNight']
             std['DurationSeconds'] = Raw['CALL_DURATION']

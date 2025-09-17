@@ -110,8 +110,8 @@ class ThemeManager:
             self.style.configure('EB.Primary.TButton', background=accent, foreground='#ffffff')
             self.style.map('EB.Primary.TButton',
                            background=[('active', accent), ('!disabled', accent)],
-                           foreground=[('!disabled', '#ffffff')])
-
+                           foreground=[('!disabled', "#ffffff8d")])
+            
             self.style.configure('EB.TButton', background=btn_bg, foreground=theme_colors['button_fg'])
 
             # Recursively apply colors to widgets (best-effort)

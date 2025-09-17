@@ -24,7 +24,7 @@ class CDRAnalyzerApp:
     def setup_logging(self):
         """Setup application logging"""
         log_level = self.config.get('logging', 'level', fallback='INFO')
-        setup_logger(level=log_level)
+        setup_logger(level=log_level)# type: ignore
         
     def handle_exception(self, exc_type, exc_value, exc_traceback):
         """Global exception handler"""
