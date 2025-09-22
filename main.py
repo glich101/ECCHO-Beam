@@ -95,7 +95,7 @@ class CDRAnalyzerApp:
             logging.error(f"Error during application shutdown: {e}")
             self.root.destroy()    # type: ignore
 
-def main():
+def main(): 
     """Main entry point"""
     app = CDRAnalyzerApp()
     app.run()
